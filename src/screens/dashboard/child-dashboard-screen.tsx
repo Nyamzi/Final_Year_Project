@@ -155,6 +155,10 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
     [chores]
   );
   const pendingChores = useMemo(() => chores.filter((chore) => chore.status === "assigned").length, [chores]);
+  const totalChoreRewards = useMemo(
+    () => chores.filter((chore) => chore.status === "completed").reduce((sum, chore) => sum + chore.rewardAmount, 0),
+    [chores]
+  );
   const featuredGoal = savingsGoals[0];
   const latestAllowance = allowances[0];
   const pendingTransactions = useMemo(() => transactions.filter((tx) => tx.status === "pending").length, [transactions]);
@@ -1371,7 +1375,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                 <Text style={styles.mobileLearnSubtitle}>Complete chores, earn rewards!</Text>
               </View>
               <View style={styles.mobileCoinsPill}>
-                <Text style={styles.mobileCoinsValue}>{formatMoney(completedChores * 2000)}</Text>
+                <Text style={styles.mobileCoinsValue}>{formatMoney(totalChoreRewards)}</Text>
                 <Text style={styles.mobileCoinsLabel}>Total Earned</Text>
               </View>
             </View>
@@ -1400,7 +1404,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                   <View style={styles.mobileContinueMain}>
                     <Text style={styles.rowMain}>{chore.title}</Text>
                     <Text style={styles.rowMeta}>{chore.description ?? "Complete this task and earn rewards."}</Text>
-                    <Text style={styles.mobileAmountPositive}>🪙 UGX 2,000</Text>
+                    <Text style={styles.mobileAmountPositive}>🪙 {formatMoney(chore.rewardAmount)}</Text>
                   </View>
                   <View style={styles.mobileChoreActions}>
                     <Text style={styles.mobileDueTag}>{chore.dueDate ? "Due today" : "No due date"}</Text>
@@ -1425,7 +1429,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                   <View style={styles.mobileContinueMain}>
                     <Text style={styles.rowMain}>{chore.title}</Text>
                     <Text style={styles.rowMeta}>{chore.description ?? "Completed chore"}</Text>
-                    <Text style={styles.mobileAmountPositive}>🪙 UGX 2,000</Text>
+                    <Text style={styles.mobileAmountPositive}>🪙 {formatMoney(chore.rewardAmount)}</Text>
                   </View>
                   <View style={styles.mobileChoreActions}>
                     <Text style={styles.tableCellSuccess}>Completed</Text>
@@ -1463,7 +1467,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
               </View>
               <View style={styles.webGoalsKpiRow}>
                 <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Total Chores</Text><Text style={styles.webKpiValue}>{chores.length}</Text></View>
-                <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Total Earned</Text><Text style={styles.webKpiValue}>{formatMoney(completedChores * 2000)}</Text></View>
+                <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Total Earned</Text><Text style={styles.webKpiValue}>{formatMoney(totalChoreRewards)}</Text></View>
                 <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Completed</Text><Text style={styles.webKpiValue}>{completedChores}</Text></View>
                 <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Pending Approval</Text><Text style={styles.webKpiValue}>{pendingChores}</Text></View>
               </View>
@@ -1481,7 +1485,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                 {chores.filter((c) => c.status === "assigned").map((chore) => (
                   <View key={chore.id} style={styles.webTxRow}>
                     <Text style={styles.webTxCell}>{chore.title}</Text>
-                    <Text style={styles.webTxCell}>UGX 2,000</Text>
+                    <Text style={styles.webTxCell}>{formatMoney(chore.rewardAmount)}</Text>
                     <Text style={styles.webTxCell}>{chore.dueDate ? new Date(chore.dueDate).toLocaleDateString() : "Today"}</Text>
                     <Pressable style={styles.webDoneBtn} onPress={() => handleCompleteChore(chore.id)}>
                       <Text style={styles.webDoneBtnText}>Mark Done</Text>
@@ -1494,7 +1498,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
               <View style={styles.webWalletRightCol}>
                 <View style={styles.webCard}>
                   <Text style={styles.webCardTitle}>Earnings This Week</Text>
-                  <Text style={styles.webAllowanceValue}>{formatMoney(completedChores * 2000)}</Text>
+                  <Text style={styles.webAllowanceValue}>{formatMoney(totalChoreRewards)}</Text>
                 </View>
                 <View style={styles.webCard}>
                   <Text style={styles.webCardTitle}>Pending Approval</Text>
@@ -1520,7 +1524,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
               {chores.filter((c) => c.status === "completed").slice(0, 5).map((chore) => (
                 <View key={chore.id} style={styles.webTxRow}>
                   <Text style={styles.webTxCell}>{chore.title}</Text>
-                  <Text style={styles.webTxCell}>UGX 2,000</Text>
+                  <Text style={styles.webTxCell}>{formatMoney(chore.rewardAmount)}</Text>
                   <Text style={styles.webTxCell}>{chore.completedAt ? new Date(chore.completedAt).toLocaleDateString() : "-"}</Text>
                   <Text style={styles.tableCellSuccess}>Approved</Text>
                 </View>

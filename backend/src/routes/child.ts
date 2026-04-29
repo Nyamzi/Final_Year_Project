@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { ChoreStatus, TransactionStatus, TransactionType } from "@prisma/client";
+import { BudgetPeriod, ChoreStatus, TransactionStatus, TransactionType } from "@prisma/client";
 import { authMiddleware, AuthenticatedRequest, requireRole } from "../middleware/auth";
 import { prisma } from "../db";
 
@@ -23,10 +23,98 @@ const fundGoalSchema = z.object({
   amount: z.number().positive(),
 });
 
+function getBudgetPeriodStart(date: Date, periodType: BudgetPeriod): Date {
+  const start = new Date(date);
+  start.setHours(0, 0, 0, 0);
+
+  if (periodType === "weekly") {
+    const day = start.getDay();
+    const diffToMonday = day === 0 ? 6 : day - 1;
+    start.setDate(start.getDate() - diffToMonday);
+    return start;
+  }
+
+  if (periodType === "quarterly") {
+    const quarterStartMonth = Math.floor(start.getMonth() / 3) * 3;
+    start.setMonth(quarterStartMonth, 1);
+    return start;
+  }
+
+  start.setDate(1);
+  return start;
+}
+
+async function processDueAllowancesForChild(childUserId: string) {
+  const child = await prisma.childProfile.findUnique({
+    where: { childUserId },
+    include: { wallet: true },
+  });
+
+  if (!child?.wallet) return;
+  const wallet = child.wallet;
+
+  const now = new Date();
+  const dueAllowances = await prisma.allowanceSchedule.findMany({
+    where: {
+      childId: child.id,
+      isActive: true,
+      availableOn: { lte: now },
+    },
+    orderBy: { availableOn: "asc" },
+  });
+
+  if (dueAllowances.length === 0) return;
+
+  await prisma.$transaction(async (tx) => {
+    let releasedAmount = 0;
+
+    for (const allowance of dueAllowances) {
+      const deactivated = await tx.allowanceSchedule.updateMany({
+        where: {
+          id: allowance.id,
+          isActive: true,
+        },
+        data: {
+          isActive: false,
+        },
+      });
+
+      if (deactivated.count === 0) continue;
+
+      releasedAmount += allowance.amount;
+
+      await tx.transaction.create({
+        data: {
+          walletId: wallet.id,
+          childId: child.id,
+          amount: allowance.amount,
+          type: TransactionType.earn,
+          status: TransactionStatus.approved,
+          description: `Scheduled allowance: ${allowance.title}`,
+          approvedById: allowance.parentId,
+          reviewedAt: now,
+        },
+      });
+    }
+
+    if (releasedAmount > 0) {
+      await tx.wallet.update({
+        where: { id: wallet.id },
+        data: {
+          balance: wallet.balance + releasedAmount,
+          totalEarned: wallet.totalEarned + releasedAmount,
+        },
+      });
+    }
+  });
+}
+
 // ─── Wallet ──────────────────────────────────────────────────────────────────
 
 router.get("/wallet", authMiddleware, requireRole("child"), async (req: AuthenticatedRequest, res) => {
   try {
+    await processDueAllowancesForChild(req.user!.userId);
+
     const childProfile = await prisma.childProfile.findUnique({
       where: { childUserId: req.user!.userId },
       include: {
@@ -121,8 +209,28 @@ router.post("/transactions", authMiddleware, requireRole("child"), async (req: A
       status = TransactionStatus.approved;
     }
 
-    const activeLimit = child.budgets[0] ? Number(child.budgets[0].monthlyLimit) : null;
-    if (type === TransactionType.spend && activeLimit !== null && amount <= activeLimit) {
+    const activeBudget = child.budgets[0];
+    if (type === TransactionType.spend && activeBudget) {
+      const activeLimit = Number(activeBudget.monthlyLimit);
+      const periodStart = getBudgetPeriodStart(new Date(), activeBudget.periodType);
+      const periodSpentAggregate = await prisma.transaction.aggregate({
+        _sum: { amount: true },
+        where: {
+          childId: child.id,
+          type: TransactionType.spend,
+          status: TransactionStatus.approved,
+          createdAt: { gte: periodStart },
+        },
+      });
+      const periodSpent = Number(periodSpentAggregate._sum.amount ?? 0);
+      const remaining = activeLimit - periodSpent;
+
+      if (amount > remaining) {
+        return res.status(400).json({
+          error: `This withdrawal exceeds the ${activeBudget.periodType} limit. Remaining amount: UGX ${Math.max(0, Math.round(remaining)).toLocaleString()}`,
+        });
+      }
+
       status = TransactionStatus.approved;
     }
 
@@ -328,6 +436,7 @@ router.get("/chores", authMiddleware, requireRole("child"), async (req: Authenti
         id: chore.id,
         title: chore.title,
         description: chore.description,
+        rewardAmount: Number(chore.rewardAmount),
         dueDate: chore.dueDate?.toISOString() ?? null,
         status: chore.status,
         completedAt: chore.completedAt?.toISOString() ?? null,
@@ -344,16 +453,16 @@ router.post("/chores/:id/complete", authMiddleware, requireRole("child"), async 
   try {
     const child = await prisma.childProfile.findUnique({
       where: { childUserId: req.user!.userId },
-      select: { id: true },
+      include: { wallet: true },
     });
 
-    if (!child) {
-      return res.status(404).json({ error: "Child profile not found" });
+    if (!child?.wallet) {
+      return res.status(404).json({ error: "Child profile or wallet not found" });
     }
 
     const chore = await prisma.choreAssignment.findFirst({
       where: { id: req.params.id, childId: child.id },
-      select: { id: true, status: true },
+      select: { id: true, title: true, status: true, rewardAmount: true, parentId: true },
     });
 
     if (!chore) {
@@ -364,12 +473,56 @@ router.post("/chores/:id/complete", authMiddleware, requireRole("child"), async 
       return res.status(409).json({ error: "Chore already completed" });
     }
 
-    await prisma.choreAssignment.update({
-      where: { id: chore.id },
-      data: { status: ChoreStatus.completed, completedAt: new Date() },
+    const parent = await prisma.user.findUnique({
+      where: { id: chore.parentId },
+      select: { id: true, accountBalance: true },
     });
 
-    res.json({ message: "Chore marked as completed" });
+    if (!parent) {
+      return res.status(404).json({ error: "Parent account not found" });
+    }
+
+    const rewardAmount = Number(chore.rewardAmount);
+    if (parent.accountBalance < rewardAmount) {
+      return res.status(400).json({ error: "Parent account has insufficient balance for this chore reward" });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.choreAssignment.update({
+        where: { id: chore.id },
+        data: { status: ChoreStatus.completed, completedAt: new Date() },
+      });
+
+      await tx.user.update({
+        where: { id: parent.id },
+        data: {
+          accountBalance: parent.accountBalance - rewardAmount,
+        },
+      });
+
+      await tx.wallet.update({
+        where: { id: child.wallet!.id },
+        data: {
+          balance: child.wallet!.balance + rewardAmount,
+          totalEarned: child.wallet!.totalEarned + rewardAmount,
+        },
+      });
+
+      await tx.transaction.create({
+        data: {
+          walletId: child.wallet!.id,
+          childId: child.id,
+          amount: rewardAmount,
+          type: TransactionType.earn,
+          status: TransactionStatus.approved,
+          description: `Chore reward: ${chore.title}`,
+          approvedById: parent.id,
+          reviewedAt: new Date(),
+        },
+      });
+    });
+
+    res.json({ message: "Chore completed and reward added to your wallet" });
   } catch (error) {
     console.error("Complete chore error:", error);
     res.status(500).json({ error: "Failed to complete chore" });
@@ -380,6 +533,8 @@ router.post("/chores/:id/complete", authMiddleware, requireRole("child"), async 
 
 router.get("/allowances", authMiddleware, requireRole("child"), async (req: AuthenticatedRequest, res) => {
   try {
+    await processDueAllowancesForChild(req.user!.userId);
+
     const child = await prisma.childProfile.findUnique({
       where: { childUserId: req.user!.userId },
       include: {

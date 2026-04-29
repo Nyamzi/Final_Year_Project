@@ -2,7 +2,7 @@ import { Router } from "express";
 import { prisma } from "../db";
 import { authMiddleware, AuthenticatedRequest, requireRole } from "../middleware/auth";
 import { z } from "zod";
-import { Role, TransactionStatus, TransactionType } from "@prisma/client";
+import { BudgetPeriod, Role, TransactionStatus, TransactionType } from "@prisma/client";
 import { hashPassword } from "../lib/auth";
 
 const router = Router();
@@ -19,6 +19,7 @@ const choreSchema = z.object({
   childId: z.string().min(1),
   title: z.string().min(2).max(120),
   description: z.string().max(250).optional(),
+  rewardAmount: z.number().positive().optional(),
   dueDate: z.string().optional(),
 });
 
@@ -29,10 +30,12 @@ const allowanceSchema = z.object({
   availableOn: z.string().min(1),
   notes: z.string().max(250).optional(),
 });
+const updateAllowanceSchema = allowanceSchema;
 
 const spendingLimitSchema = z.object({
   childId: z.string().min(1),
   monthlyLimit: z.number().positive(),
+  periodType: z.enum(["weekly", "monthly", "quarterly"]),
 });
 
 const profileSchema = z.object({
@@ -69,10 +72,72 @@ function parseOptionalDate(value?: string): Date | null | undefined {
   return parsed;
 }
 
+async function processDueAllowancesForParent(parentId: string) {
+  const now = new Date();
+  const dueAllowances = await prisma.allowanceSchedule.findMany({
+    where: {
+      parentId,
+      isActive: true,
+      availableOn: { lte: now },
+    },
+    include: {
+      child: {
+        include: {
+          wallet: true,
+        },
+      },
+    },
+    orderBy: { availableOn: "asc" },
+  });
+
+  if (dueAllowances.length === 0) return;
+
+  await prisma.$transaction(async (tx) => {
+    for (const allowance of dueAllowances) {
+      if (!allowance.child.wallet) continue;
+
+      const deactivated = await tx.allowanceSchedule.updateMany({
+        where: {
+          id: allowance.id,
+          isActive: true,
+        },
+        data: {
+          isActive: false,
+        },
+      });
+
+      if (deactivated.count === 0) continue;
+
+      await tx.wallet.update({
+        where: { id: allowance.child.wallet.id },
+        data: {
+          balance: allowance.child.wallet.balance + allowance.amount,
+          totalEarned: allowance.child.wallet.totalEarned + allowance.amount,
+        },
+      });
+
+      await tx.transaction.create({
+        data: {
+          walletId: allowance.child.wallet.id,
+          childId: allowance.childId,
+          amount: allowance.amount,
+          type: TransactionType.earn,
+          status: TransactionStatus.approved,
+          description: `Scheduled allowance: ${allowance.title}`,
+          approvedById: parentId,
+          reviewedAt: now,
+        },
+      });
+    }
+  });
+}
+
 // ─── Children ─────────────────────────────────────────────────────────────────
 
 router.get("/children", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
   try {
+    await processDueAllowancesForParent(req.user!.userId);
+
     const children = await prisma.childProfile.findMany({
       where: { parentId: req.user!.userId },
       include: {
@@ -97,6 +162,7 @@ router.get("/children", authMiddleware, requireRole("parent"), async (req: Authe
             }
           : null,
         activeSpendingLimit: child.budgets[0] ? Number(child.budgets[0].monthlyLimit) : null,
+        activeSpendingLimitPeriod: child.budgets[0]?.periodType ?? null,
       })),
     });
   } catch (error) {
@@ -265,7 +331,12 @@ router.post("/spending-limit", authMiddleware, requireRole("parent"), async (req
         data: { isActive: false, periodEnd: new Date() },
       });
       await tx.budget.create({
-        data: { childId: child.id, monthlyLimit: parsed.data.monthlyLimit, isActive: true },
+        data: {
+          childId: child.id,
+          monthlyLimit: parsed.data.monthlyLimit,
+          periodType: parsed.data.periodType as BudgetPeriod,
+          isActive: true,
+        },
       });
     });
 
@@ -291,6 +362,7 @@ router.get("/chores", authMiddleware, requireRole("parent"), async (req: Authent
         id: chore.id,
         title: chore.title,
         description: chore.description,
+        rewardAmount: Number(chore.rewardAmount),
         dueDate: chore.dueDate?.toISOString() ?? null,
         status: chore.status,
         completedAt: chore.completedAt?.toISOString() ?? null,
@@ -330,6 +402,7 @@ router.post("/chores", authMiddleware, requireRole("parent"), async (req: Authen
         parentId: req.user!.userId,
         title: parsed.data.title,
         description: parsed.data.description?.trim() || undefined,
+        rewardAmount: parsed.data.rewardAmount ?? 2000,
         dueDate: dueDate ?? undefined,
       },
     });
@@ -340,6 +413,7 @@ router.post("/chores", authMiddleware, requireRole("parent"), async (req: Authen
         id: chore.id,
         title: chore.title,
         description: chore.description,
+        rewardAmount: Number(chore.rewardAmount),
         dueDate: chore.dueDate?.toISOString() ?? null,
         status: chore.status,
         childName: child.nickname,
@@ -355,6 +429,8 @@ router.post("/chores", authMiddleware, requireRole("parent"), async (req: Authen
 
 router.get("/allowances", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
   try {
+    await processDueAllowancesForParent(req.user!.userId);
+
     const allowances = await prisma.allowanceSchedule.findMany({
       where: { parentId: req.user!.userId },
       include: { child: true },
@@ -399,15 +475,42 @@ router.post("/allowances", authMiddleware, requireRole("parent"), async (req: Au
       return res.status(400).json({ error: "Invalid allowance date" });
     }
 
-    const allowance = await prisma.allowanceSchedule.create({
-      data: {
-        childId: child.id,
-        parentId: req.user!.userId,
-        title: parsed.data.title,
-        amount: parsed.data.amount,
-        availableOn,
-        notes: parsed.data.notes?.trim() || undefined,
-      },
+    const parent = await prisma.user.findUnique({
+      where: { id: req.user!.userId },
+      select: { id: true, accountBalance: true },
+    });
+    if (!parent) {
+      return res.status(404).json({ error: "Parent account not found" });
+    }
+
+    if (Number(parent.accountBalance) < parsed.data.amount) {
+      return res.status(400).json({ error: "Insufficient parent account balance for this allowance" });
+    }
+
+    const { allowance, updatedParent } = await prisma.$transaction(async (tx) => {
+      const createdAllowance = await tx.allowanceSchedule.create({
+        data: {
+          childId: child.id,
+          parentId: req.user!.userId,
+          title: parsed.data.title,
+          amount: parsed.data.amount,
+          availableOn,
+          notes: parsed.data.notes?.trim() || undefined,
+        },
+      });
+
+      const parentUpdate = await tx.user.update({
+        where: { id: parent.id },
+        data: {
+          accountBalance: parent.accountBalance - parsed.data.amount,
+        },
+        select: { accountBalance: true },
+      });
+
+      return {
+        allowance: createdAllowance,
+        updatedParent: parentUpdate,
+      };
     });
 
     res.status(201).json({
@@ -419,6 +522,7 @@ router.post("/allowances", authMiddleware, requireRole("parent"), async (req: Au
         availableOn: allowance.availableOn.toISOString(),
         childName: child.nickname,
       },
+      parentBalance: Number(updatedParent.accountBalance),
     });
   } catch (error) {
     console.error("Create allowance error:", error);
@@ -426,10 +530,167 @@ router.post("/allowances", authMiddleware, requireRole("parent"), async (req: Au
   }
 });
 
+router.delete("/allowances/:id", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
+  try {
+    const allowance = await prisma.allowanceSchedule.findFirst({
+      where: {
+        id: req.params.id,
+        parentId: req.user!.userId,
+      },
+      select: {
+        id: true,
+        amount: true,
+        isActive: true,
+      },
+    });
+
+    if (!allowance) {
+      return res.status(404).json({ error: "Allowance not found" });
+    }
+
+    if (!allowance.isActive) {
+      return res.status(400).json({ error: "Allowance already paid and cannot be reversed" });
+    }
+
+    const updatedParent = await prisma.$transaction(async (tx) => {
+      const deleted = await tx.allowanceSchedule.deleteMany({
+        where: {
+          id: allowance.id,
+          parentId: req.user!.userId,
+          isActive: true,
+        },
+      });
+
+      if (deleted.count === 0) {
+        throw new Error("Allowance was already processed. Please refresh and try again.");
+      }
+
+      return tx.user.update({
+        where: { id: req.user!.userId },
+        data: {
+          accountBalance: {
+            increment: allowance.amount,
+          },
+        },
+        select: { accountBalance: true },
+      });
+    });
+
+    res.json({
+      message: "Allowance deleted and refunded to parent account",
+      parentBalance: Number(updatedParent.accountBalance),
+    });
+  } catch (error) {
+    console.error("Delete allowance error:", error);
+    const message = error instanceof Error ? error.message : "Failed to delete allowance";
+    res.status(500).json({ error: message });
+  }
+});
+
+router.patch("/allowances/:id", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
+  try {
+    const parsed = updateAllowanceSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid allowance update payload" });
+    }
+
+    const existingAllowance = await prisma.allowanceSchedule.findFirst({
+      where: {
+        id: req.params.id,
+        parentId: req.user!.userId,
+      },
+      select: {
+        id: true,
+        amount: true,
+        isActive: true,
+      },
+    });
+    if (!existingAllowance) {
+      return res.status(404).json({ error: "Allowance not found" });
+    }
+    if (!existingAllowance.isActive) {
+      return res.status(400).json({ error: "Paid allowance cannot be edited" });
+    }
+
+    const child = await prisma.childProfile.findFirst({
+      where: { id: parsed.data.childId, parentId: req.user!.userId },
+      select: { id: true, nickname: true },
+    });
+    if (!child) {
+      return res.status(404).json({ error: "Child not found" });
+    }
+
+    const availableOn = new Date(parsed.data.availableOn);
+    if (Number.isNaN(availableOn.getTime())) {
+      return res.status(400).json({ error: "Invalid allowance date" });
+    }
+
+    const amountDifference = parsed.data.amount - Number(existingAllowance.amount);
+
+    const parent = await prisma.user.findUnique({
+      where: { id: req.user!.userId },
+      select: { id: true, accountBalance: true },
+    });
+    if (!parent) {
+      return res.status(404).json({ error: "Parent account not found" });
+    }
+
+    if (amountDifference > 0 && Number(parent.accountBalance) < amountDifference) {
+      return res.status(400).json({ error: "Insufficient parent account balance for this update" });
+    }
+
+    const { updatedAllowance, updatedParent } = await prisma.$transaction(async (tx) => {
+      const allowance = await tx.allowanceSchedule.update({
+        where: { id: existingAllowance.id },
+        data: {
+          childId: child.id,
+          title: parsed.data.title,
+          amount: parsed.data.amount,
+          availableOn,
+          notes: parsed.data.notes?.trim() || undefined,
+        },
+      });
+
+      const parentUpdate = await tx.user.update({
+        where: { id: parent.id },
+        data: {
+          accountBalance: parent.accountBalance - amountDifference,
+        },
+        select: { accountBalance: true },
+      });
+
+      return {
+        updatedAllowance: allowance,
+        updatedParent: parentUpdate,
+      };
+    });
+
+    res.json({
+      message: "Allowance updated successfully",
+      allowance: {
+        id: updatedAllowance.id,
+        title: updatedAllowance.title,
+        amount: Number(updatedAllowance.amount),
+        availableOn: updatedAllowance.availableOn.toISOString(),
+        notes: updatedAllowance.notes,
+        isActive: updatedAllowance.isActive,
+        childId: updatedAllowance.childId,
+        childName: child.nickname,
+      },
+      parentBalance: Number(updatedParent.accountBalance),
+    });
+  } catch (error) {
+    console.error("Update allowance error:", error);
+    res.status(500).json({ error: "Failed to update allowance" });
+  }
+});
+
 // ─── All Transactions ─────────────────────────────────────────────────────────
 
 router.get("/transactions", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
   try {
+    await processDueAllowancesForParent(req.user!.userId);
+
     const childId = typeof req.query.childId === "string" ? req.query.childId : undefined;
 
     const transactions = await prisma.transaction.findMany({
@@ -812,6 +1073,8 @@ router.patch("/preferences", authMiddleware, requireRole("parent"), async (req: 
 
 router.get("/notifications", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
   try {
+    await processDueAllowancesForParent(req.user!.userId);
+
     const [pendingTx, recentTx, recentAllowances, recentChores] = await Promise.all([
       prisma.transaction.findMany({
         where: { status: TransactionStatus.pending, child: { parentId: req.user!.userId } },
@@ -850,14 +1113,26 @@ router.get("/notifications", authMiddleware, requireRole("parent"), async (req: 
         .filter((tx) => tx.status !== TransactionStatus.pending)
         .map((tx) => ({
           id: `tx-${tx.id}`,
-          type: tx.status === TransactionStatus.approved ? "approved" : "rejected",
-          message: `${tx.child.nickname} transaction ${tx.status}: ${tx.type} ${Number(tx.amount).toLocaleString()}`,
+          type:
+            tx.status === TransactionStatus.approved &&
+            (tx.description ?? "").toLowerCase().includes("chore reward")
+              ? "chore_reward"
+              : tx.status === TransactionStatus.approved
+                ? "approved"
+                : "rejected",
+          message:
+            tx.status === TransactionStatus.approved &&
+            (tx.description ?? "").toLowerCase().includes("chore reward")
+              ? `${tx.child.nickname} completed a chore and received UGX ${Number(tx.amount).toLocaleString()}`
+              : `${tx.child.nickname} transaction ${tx.status}: ${tx.type} ${Number(tx.amount).toLocaleString()}`,
           createdAt: tx.updatedAt,
         })),
       ...recentAllowances.map((a) => ({
         id: `allowance-${a.id}`,
         type: "allowance",
-        message: `Allowance "${a.title}" scheduled for ${a.child.nickname}`,
+        message: a.isActive
+          ? `Allowance "${a.title}" scheduled for ${a.child.nickname}`
+          : `Allowance "${a.title}" was received by ${a.child.nickname}`,
         createdAt: a.updatedAt,
       })),
       ...recentChores.map((c) => ({

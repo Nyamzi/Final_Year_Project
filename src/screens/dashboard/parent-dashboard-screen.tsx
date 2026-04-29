@@ -5,6 +5,7 @@ import {
   apiCreateParentAllowance,
   apiCreateParentChild,
   apiCreateParentChore,
+  apiDeleteParentAllowance,
   apiCreateParentSavingsGoal,
   apiParentAllowances,
   apiParentAllTransactions,
@@ -23,6 +24,7 @@ import {
   apiParentNotifications,
   apiParentTransactionDecision,
   apiLogDashboardAction,
+  apiUpdateParentAllowance,
   apiUpdateParentAccount,
   apiUpdateParentPreferences,
   apiCreateParentSupportTicket,
@@ -160,15 +162,19 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
 
   const [selectedChildId, setSelectedChildId] = useState("");
   const [limitAmount, setLimitAmount] = useState("");
+  const [limitPeriodType, setLimitPeriodType] = useState<"weekly" | "monthly" | "quarterly">("monthly");
 
   const [choreTitle, setChoreTitle] = useState("");
   const [choreDescription, setChoreDescription] = useState("");
+  const [choreRewardAmount, setChoreRewardAmount] = useState("2000");
   const [choreDueDate, setChoreDueDate] = useState("");
 
   const [allowanceTitle, setAllowanceTitle] = useState("");
   const [allowanceAmount, setAllowanceAmount] = useState("");
   const [allowanceDate, setAllowanceDate] = useState("");
   const [allowanceNotes, setAllowanceNotes] = useState("");
+  const [showAllowanceForm, setShowAllowanceForm] = useState(false);
+  const [editingAllowanceId, setEditingAllowanceId] = useState<string | null>(null);
   const [allowanceChildDropdownOpen, setAllowanceChildDropdownOpen] = useState(false);
   const [choreChildDropdownOpen, setChoreChildDropdownOpen] = useState(false);
   const [showAssignChoreForm, setShowAssignChoreForm] = useState(false);
@@ -435,7 +441,7 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
     setSubmitting(true);
     clearMessages();
     try {
-      const data = await apiParentSpendingLimit({ childId: selectedChildId, monthlyLimit });
+      const data = await apiParentSpendingLimit({ childId: selectedChildId, monthlyLimit, periodType: limitPeriodType });
       setStatus(data.message);
       setLimitAmount("");
       await loadParentData();
@@ -447,8 +453,13 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
   }
 
   async function handleCreateChore() {
+    const rewardAmount = Number(choreRewardAmount);
     if (!selectedChildId) {
       setError("Select a child first.");
+      return;
+    }
+    if (!Number.isFinite(rewardAmount) || rewardAmount <= 0) {
+      setError("Enter a valid chore reward amount.");
       return;
     }
 
@@ -459,11 +470,13 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
         childId: selectedChildId,
         title: choreTitle,
         description: choreDescription || undefined,
+        rewardAmount,
         dueDate: choreDueDate || undefined,
       });
       setStatus(data.message);
       setChoreTitle("");
       setChoreDescription("");
+      setChoreRewardAmount("2000");
       setChoreDueDate("");
       await loadParentData();
     } catch (err) {
@@ -499,9 +512,66 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
       setAllowanceAmount("");
       setAllowanceDate("");
       setAllowanceNotes("");
+      setAllowanceChildDropdownOpen(false);
+      setShowAllowanceForm(false);
       await loadParentData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not create allowance.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleDeleteAllowance(allowanceId: string) {
+    setSubmitting(true);
+    clearMessages();
+    try {
+      const data = await apiDeleteParentAllowance(allowanceId);
+      setStatus(data.message);
+      if (typeof data.parentBalance === "number") {
+        setParentAccount((prev) => ({ ...prev, balance: data.parentBalance ?? prev.balance }));
+      }
+      await loadParentData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete allowance.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleUpdateAllowance() {
+    if (!editingAllowanceId) return;
+
+    const amount = Number(allowanceAmount);
+    if (!selectedChildId) {
+      setError("Select a child first.");
+      return;
+    }
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setError("Enter a valid allowance amount.");
+      return;
+    }
+
+    setSubmitting(true);
+    clearMessages();
+    try {
+      const data = await apiUpdateParentAllowance(editingAllowanceId, {
+        childId: selectedChildId,
+        title: allowanceTitle,
+        amount,
+        availableOn: allowanceDate,
+        notes: allowanceNotes || undefined,
+      });
+      setStatus(data.message);
+      if (typeof data.parentBalance === "number") {
+        setParentAccount((prev) => ({ ...prev, balance: data.parentBalance ?? prev.balance }));
+      }
+      setEditingAllowanceId(null);
+      setAllowanceChildDropdownOpen(false);
+      setShowAllowanceForm(false);
+      await loadParentData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update allowance.");
     } finally {
       setSubmitting(false);
     }
@@ -680,6 +750,7 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
     }
     if (nextTab !== "allowances") {
       setAllowanceChildDropdownOpen(false);
+      setShowAllowanceForm(false);
     }
     if (nextTab !== "chores") {
       setChoreChildDropdownOpen(false);
@@ -707,6 +778,20 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
     }
     setShowAssignChoreForm(true);
     handleTabPress("chores");
+  }
+
+  function handleOpenAllowanceForm(childId?: string) {
+    if (childId) {
+      setSelectedChildId(childId);
+    }
+    setEditingAllowanceId(null);
+    setAllowanceTitle("");
+    setAllowanceAmount("");
+    setAllowanceDate("");
+    setAllowanceNotes("");
+    setAllowanceChildDropdownOpen(false);
+    setShowAllowanceForm(true);
+    handleTabPress("allowances");
   }
 
   function handleOpenCreateGoal() {
@@ -812,6 +897,15 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
               </Pressable>
             );
           })}
+          <Pressable
+            onPress={onLogout}
+            style={[styles.navItem, isMobile && styles.navItemMobile]}
+          >
+            <Text style={styles.navIcon}>⎋</Text>
+            <View style={styles.navLabelWrap}>
+              <Text style={[styles.navLabel, isMobile && styles.navLabelMobile]}>Logout</Text>
+            </View>
+          </Pressable>
         </ScrollView>
 
         <View style={[styles.sidebarFooter, isMobile && styles.sidebarFooterMobile]}>
@@ -824,9 +918,6 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
               <Text style={styles.footerEmail} numberOfLines={1}>{email}</Text>
             </View>
           </View>
-          <Pressable onPress={onLogout} style={styles.logoutBtn}>
-            <Text style={styles.logoutText}>☐ Logout</Text>
-          </Pressable>
         </View>
       </Animated.View>
 
@@ -1772,7 +1863,10 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                     <Text style={styles.childrenSubtitle}>Manage scheduled allowances and payments for your children.</Text>
                   </View>
                   <View style={styles.childrenTopActions}>
-                    <Pressable style={[styles.childrenTopBtn, styles.childrenTopBtnPrimary]}>
+                    <Pressable
+                      style={[styles.childrenTopBtn, styles.childrenTopBtnPrimary]}
+                      onPress={() => handleOpenAllowanceForm()}
+                    >
                       <Text style={[styles.childrenTopBtnText, styles.childrenTopBtnTextPrimary]}>+ Create Allowance</Text>
                     </Pressable>
                   </View>
@@ -1817,8 +1911,33 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                             <Text style={styles.childrenSummaryValue}>{formatMoney(allowance.amount)}</Text>
                             <Text style={styles.listItemMeta}>Next Payment: {new Date(allowance.availableOn).toLocaleDateString()}</Text>
                             <View style={styles.desktopChildActions}>
-                              <Pressable style={styles.desktopSmallBtn}><Text style={styles.desktopSmallBtnText}>View Details</Text></Pressable>
-                              <Pressable style={styles.desktopSmallBtn}><Text style={styles.desktopSmallBtnText}>Edit</Text></Pressable>
+                              <Pressable
+                                style={styles.desktopSmallBtn}
+                                onPress={() => {
+                                  setEditingAllowanceId(allowance.id);
+                                  setSelectedChildId(allowance.childId);
+                                  setAllowanceTitle(allowance.title);
+                                  setAllowanceAmount(String(allowance.amount));
+                                  setAllowanceDate(allowance.availableOn.slice(0, 10));
+                                  setAllowanceNotes(allowance.notes ?? "");
+                                  setAllowanceChildDropdownOpen(false);
+                                  setShowAllowanceForm(true);
+                                }}
+                              >
+                                <Text style={styles.desktopSmallBtnText}>View Details</Text>
+                              </Pressable>
+                              {allowance.isActive ? (
+                                <Pressable
+                                  style={styles.desktopSmallBtn}
+                                  onPress={() => handleDeleteAllowance(allowance.id)}
+                                >
+                                  <Text style={styles.desktopSmallBtnText}>Delete & Refund</Text>
+                                </Pressable>
+                              ) : (
+                                <Pressable style={styles.desktopSmallBtn} disabled>
+                                  <Text style={styles.desktopSmallBtnText}>Already Paid</Text>
+                                </Pressable>
+                              )}
                             </View>
                           </View>
                         ))}
@@ -1879,49 +1998,81 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                   </View>
                 </View>
               </>
-            ) : (
-              <View style={[styles.formCard, isMobile && styles.mobileSurfaceCard]}>
-                <Text style={styles.formCardTitle}>Create Allowance</Text>
-                <View style={styles.dropdownWrap}>
-                  <Text style={styles.childSelectorLabel}>Select Child</Text>
-                  <Pressable
-                    style={styles.dropdownButton}
-                    onPress={() => setAllowanceChildDropdownOpen((prev) => !prev)}
-                  >
-                    <Text style={styles.dropdownButtonText}>
-                      {children.find((child) => child.id === selectedChildId)?.nickname ?? "Choose a child"}
-                    </Text>
-                    <Text style={styles.dropdownChevron}>{allowanceChildDropdownOpen ? "▲" : "▼"}</Text>
-                  </Pressable>
+            ) : null}
 
-                  {allowanceChildDropdownOpen ? (
-                    <View style={styles.dropdownMenu}>
-                      {children.length === 0 ? (
-                        <Text style={styles.dropdownEmptyText}>No children found.</Text>
-                      ) : (
-                        children.map((child) => (
-                          <Pressable
-                            key={child.id}
-                            style={styles.dropdownItem}
-                            onPress={() => {
-                              setSelectedChildId(child.id);
-                              setAllowanceChildDropdownOpen(false);
-                            }}
-                          >
-                            <Text style={styles.dropdownItemText}>{child.nickname}</Text>
-                          </Pressable>
-                        ))
-                      )}
-                    </View>
+            {showAllowanceForm ? (
+              <View style={styles.modalOverlay}>
+                <View style={[styles.modalCard, isMobile && styles.mobileSurfaceCard]}>
+                  <View style={styles.modalHead}>
+                    <Text style={styles.formCardTitle}>{editingAllowanceId ? "Allowance Details" : "Create Allowance"}</Text>
+                    <Pressable
+                      style={styles.modalCloseBtn}
+                      onPress={() => {
+                        setEditingAllowanceId(null);
+                        setShowAllowanceForm(false);
+                        setAllowanceChildDropdownOpen(false);
+                      }}
+                    >
+                      <Text style={styles.modalCloseText}>Close</Text>
+                    </Pressable>
+                  </View>
+                  <View style={styles.dropdownWrap}>
+                    <Text style={styles.childSelectorLabel}>Select Child</Text>
+                    <Pressable
+                      style={styles.dropdownButton}
+                      onPress={() => setAllowanceChildDropdownOpen((prev) => !prev)}
+                    >
+                      <Text style={styles.dropdownButtonText}>
+                        {children.find((child) => child.id === selectedChildId)?.nickname ?? "Choose a child"}
+                      </Text>
+                      <Text style={styles.dropdownChevron}>{allowanceChildDropdownOpen ? "▲" : "▼"}</Text>
+                    </Pressable>
+
+                    {allowanceChildDropdownOpen ? (
+                      <View style={styles.dropdownMenu}>
+                        {children.length === 0 ? (
+                          <Text style={styles.dropdownEmptyText}>No children found.</Text>
+                        ) : (
+                          children.map((child) => (
+                            <Pressable
+                              key={child.id}
+                              style={styles.dropdownItem}
+                              onPress={() => {
+                                setSelectedChildId(child.id);
+                                setAllowanceChildDropdownOpen(false);
+                              }}
+                            >
+                              <Text style={styles.dropdownItemText}>{child.nickname}</Text>
+                            </Pressable>
+                          ))
+                        )}
+                      </View>
+                    ) : null}
+                  </View>
+                  <AppInput label="Title" value={allowanceTitle} onChangeText={setAllowanceTitle} />
+                  <AppInput label="Amount (UGX)" value={allowanceAmount} onChangeText={setAllowanceAmount} keyboardType="numeric" />
+                  <AppDateInput label="Available On" value={allowanceDate} onChangeText={setAllowanceDate} />
+                  <AppInput label="Notes" value={allowanceNotes} onChangeText={setAllowanceNotes} multiline numberOfLines={3} />
+                  <AppButton
+                    title={editingAllowanceId ? "Save Changes" : "Create Allowance"}
+                    loading={submitting}
+                    onPress={editingAllowanceId ? handleUpdateAllowance : handleCreateAllowance}
+                  />
+                  {editingAllowanceId ? (
+                    <AppButton
+                      title="Delete & Refund"
+                      loading={submitting}
+                      onPress={async () => {
+                        await handleDeleteAllowance(editingAllowanceId);
+                        setEditingAllowanceId(null);
+                        setShowAllowanceForm(false);
+                        setAllowanceChildDropdownOpen(false);
+                      }}
+                    />
                   ) : null}
                 </View>
-                <AppInput label="Title" value={allowanceTitle} onChangeText={setAllowanceTitle} />
-                <AppInput label="Amount (UGX)" value={allowanceAmount} onChangeText={setAllowanceAmount} keyboardType="numeric" />
-                <AppDateInput label="Available On" value={allowanceDate} onChangeText={setAllowanceDate} />
-                <AppInput label="Notes" value={allowanceNotes} onChangeText={setAllowanceNotes} multiline numberOfLines={3} />
-                <AppButton title="Create Allowance" loading={submitting} onPress={handleCreateAllowance} />
               </View>
-            )}
+            ) : null}
           </View>
         )}
 
@@ -2077,6 +2228,7 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                         </View>
                         <AppInput label="Title" value={choreTitle} onChangeText={setChoreTitle} />
                         <AppInput label="Description" value={choreDescription} onChangeText={setChoreDescription} multiline numberOfLines={3} />
+                        <AppInput label="Reward Amount (UGX)" value={choreRewardAmount} onChangeText={setChoreRewardAmount} keyboardType="numeric" />
                         <AppDateInput label="Due Date" value={choreDueDate} onChangeText={setChoreDueDate} />
                         <AppButton title="Assign Chore" loading={submitting} onPress={handleCreateChore} />
                       </View>
@@ -2149,6 +2301,7 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                 </View>
                 <AppInput label="Title" value={choreTitle} onChangeText={setChoreTitle} />
                 <AppInput label="Description" value={choreDescription} onChangeText={setChoreDescription} multiline numberOfLines={3} />
+                <AppInput label="Reward Amount (UGX)" value={choreRewardAmount} onChangeText={setChoreRewardAmount} keyboardType="numeric" />
                 <AppDateInput label="Due Date (optional)" value={choreDueDate} onChangeText={setChoreDueDate} />
                 <AppButton title="Assign Chore" loading={submitting} onPress={handleCreateChore} />
               </View>
@@ -2391,7 +2544,7 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                     <Text style={styles.desktopKpiValue}>{children.filter((c) => c.activeSpendingLimit).length}</Text>
                   </View>
                   <View style={styles.desktopKpiCard}>
-                    <Text style={styles.desktopKpiLabel}>Average Monthly Limit</Text>
+                    <Text style={styles.desktopKpiLabel}>Average Limit</Text>
                     <Text style={styles.desktopKpiValue}>
                       {formatMoney(
                         children.filter((c) => c.activeSpendingLimit).length > 0
@@ -2431,9 +2584,13 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                                 <Text style={styles.listItemMain}>{child.nickname}</Text>
                                 <Text style={styles.childrenSummaryLabel}>Age {child.age}</Text>
                               </View>
-                              <Text style={styles.childrenSummaryLabel}>Monthly Limit</Text>
+                              <Text style={styles.childrenSummaryLabel}>
+                                {(child.activeSpendingLimitPeriod ?? "monthly").charAt(0).toUpperCase() +
+                                  (child.activeSpendingLimitPeriod ?? "monthly").slice(1)}{" "}
+                                Limit
+                              </Text>
                               <Text style={styles.childrenSummaryValue}>{formatMoney(limit)}</Text>
-                              <Text style={styles.listItemMeta}>Spent this month: {formatMoney(spend)}</Text>
+                              <Text style={styles.listItemMeta}>Spent this {child.activeSpendingLimitPeriod ?? "period"}: {formatMoney(spend)}</Text>
                               <View style={styles.progressTrack}>
                                 <View style={[styles.progressFill, { width: `${usedPct}%` as any }]} />
                               </View>
@@ -2443,6 +2600,7 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                                   onPress={() => {
                                     setSelectedChildId(child.id);
                                     setLimitAmount(limit > 0 ? String(limit) : "");
+                                    if (child.activeSpendingLimitPeriod) setLimitPeriodType(child.activeSpendingLimitPeriod);
                                   }}
                                 >
                                   <Text style={[styles.desktopSmallBtnText, styles.desktopSmallBtnPrimaryText]}>Edit Limit</Text>
@@ -2455,7 +2613,7 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                     </View>
 
                     <View style={styles.desktopPanel}>
-                      <Text style={styles.sectionTitle}>Update Monthly Limit</Text>
+                      <Text style={styles.sectionTitle}>Update Spending Limit</Text>
                       <View style={styles.dropdownWrap}>
                         <Text style={styles.childSelectorLabel}>Select Child</Text>
                         <Pressable style={styles.dropdownButton} onPress={() => setLimitsChildDropdownOpen((p) => !p)}>
@@ -2479,7 +2637,20 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                           </View>
                         ) : null}
                       </View>
-                      <AppInput label="Monthly Limit (UGX)" value={limitAmount} onChangeText={setLimitAmount} keyboardType="numeric" />
+                      <AppInput label="Limit Amount (UGX)" value={limitAmount} onChangeText={setLimitAmount} keyboardType="numeric" />
+                      <View style={styles.toggleRowGroup}>
+                        {(["weekly", "monthly", "quarterly"] as const).map((period) => (
+                          <Pressable
+                            key={period}
+                            style={[styles.chipBtn, limitPeriodType === period && styles.chipBtnActive]}
+                            onPress={() => setLimitPeriodType(period)}
+                          >
+                            <Text style={[styles.chipBtnText, limitPeriodType === period && styles.chipBtnTextActive]}>
+                              {period.charAt(0).toUpperCase() + period.slice(1)}
+                            </Text>
+                          </Pressable>
+                        ))}
+                      </View>
                       <AppButton title="Update Limit" loading={submitting} onPress={handleSetLimit} />
                     </View>
                   </View>
@@ -2521,7 +2692,7 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
               <>
                 <Text style={[styles.pageTitle, isMobile && styles.mobilePageTitle]}>Spending Limits</Text>
                 <View style={[styles.formCard, isMobile && styles.mobileSurfaceCard]}>
-                  <Text style={styles.formCardTitle}>Set Monthly Spending Limit</Text>
+                  <Text style={styles.formCardTitle}>Set Spending Limit</Text>
                   <View style={styles.dropdownWrap}>
                     <Text style={styles.childSelectorLabel}>Select Child</Text>
                     <Pressable style={styles.dropdownButton} onPress={() => setLimitsChildDropdownOpen((p) => !p)}>
@@ -2545,7 +2716,20 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                       </View>
                     ) : null}
                   </View>
-                  <AppInput label="Monthly Limit (UGX)" value={limitAmount} onChangeText={setLimitAmount} keyboardType="numeric" />
+                  <AppInput label="Limit Amount (UGX)" value={limitAmount} onChangeText={setLimitAmount} keyboardType="numeric" />
+                  <View style={styles.toggleRowGroup}>
+                    {(["weekly", "monthly", "quarterly"] as const).map((period) => (
+                      <Pressable
+                        key={period}
+                        style={[styles.chipBtn, limitPeriodType === period && styles.chipBtnActive]}
+                        onPress={() => setLimitPeriodType(period)}
+                      >
+                        <Text style={[styles.chipBtnText, limitPeriodType === period && styles.chipBtnTextActive]}>
+                          {period.charAt(0).toUpperCase() + period.slice(1)}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
                   <AppButton title="Update Limit" loading={submitting} onPress={handleSetLimit} />
                 </View>
                 <View style={[styles.formCard, isMobile && styles.mobileSurfaceCard]}>
@@ -4104,6 +4288,32 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "800",
   },
+  toggleRowGroup: {
+    flexDirection: "row",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+  chipBtn: {
+    minHeight: 36,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#d8deef",
+    backgroundColor: "#ffffff",
+    paddingHorizontal: 12,
+    justifyContent: "center",
+  },
+  chipBtnActive: {
+    backgroundColor: "#eef2ff",
+    borderColor: "#b8c3ff",
+  },
+  chipBtnText: {
+    color: "#4b537c",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  chipBtnTextActive: {
+    color: SIDEBAR_BG,
+  },
   helperText: {
     color: "#7a80ab",
     fontSize: 12,
@@ -4754,5 +4964,47 @@ const styles = StyleSheet.create({
   },
   mobileBottomLabelActive: {
     color: SIDEBAR_BG,
+  },
+  modalOverlay: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    backgroundColor: "rgba(12, 20, 48, 0.35)",
+    justifyContent: "flex-start",
+    alignItems: "center",
+    paddingTop: 72,
+    paddingHorizontal: 20,
+    paddingBottom: 20,
+    zIndex: 200,
+  },
+  modalCard: {
+    width: "100%",
+    maxWidth: 520,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#e6ebfb",
+    backgroundColor: "#ffffff",
+    padding: 16,
+    gap: 10,
+  },
+  modalHead: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  modalCloseBtn: {
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#dde4fa",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: "#f8faff",
+  },
+  modalCloseText: {
+    color: "#3e4d71",
+    fontSize: 12,
+    fontWeight: "700",
   },
 });

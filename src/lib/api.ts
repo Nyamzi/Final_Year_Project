@@ -56,6 +56,7 @@ export type ChoreSummary = {
   id: string;
   title: string;
   description: string | null;
+  rewardAmount: number;
   dueDate: string | null;
   status: "assigned" | "completed";
   completedAt: string | null;
@@ -77,6 +78,7 @@ export type ParentChildSummary = {
   email: string;
   wallet: WalletSummary | null;
   activeSpendingLimit: number | null;
+  activeSpendingLimitPeriod: "weekly" | "monthly" | "quarterly" | null;
 };
 
 export type ParentPendingTransaction = {
@@ -114,6 +116,7 @@ export type ParentChoreSummary = {
   id: string;
   title: string;
   description: string | null;
+  rewardAmount: number;
   dueDate: string | null;
   status: "assigned" | "completed";
   completedAt: string | null;
@@ -246,7 +249,8 @@ async function request<TResponse>(path: string, init?: RequestInit): Promise<TRe
   }
 
   if (!response.ok) {
-    throw new Error((payload.error as string) ?? (payload.message as string) ?? "Request failed");
+    const fallbackMessage = text.trim() || `Request failed (${response.status})`;
+    throw new Error((payload.error as string) ?? (payload.message as string) ?? fallbackMessage);
   }
 
   return payload as TResponse;
@@ -390,7 +394,11 @@ export function apiParentTransactionDecision(id: string, decision: "approved" | 
   });
 }
 
-export function apiParentSpendingLimit(input: { childId: string; monthlyLimit: number }) {
+export function apiParentSpendingLimit(input: {
+  childId: string;
+  monthlyLimit: number;
+  periodType: "weekly" | "monthly" | "quarterly";
+}) {
   return request<{ message: string }>("/api/parent/spending-limit", {
     method: "POST",
     body: JSON.stringify(input),
@@ -407,6 +415,7 @@ export function apiCreateParentChore(input: {
   childId: string;
   title: string;
   description?: string;
+  rewardAmount?: number;
   dueDate?: string;
 }) {
   return request<{ message: string }>("/api/parent/chores", {
@@ -428,8 +437,30 @@ export function apiCreateParentAllowance(input: {
   availableOn: string;
   notes?: string;
 }) {
-  return request<{ message: string }>("/api/parent/allowances", {
+  return request<{ message: string; parentBalance?: number }>("/api/parent/allowances", {
     method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function apiDeleteParentAllowance(id: string) {
+  return request<{ message: string; parentBalance?: number }>(`/api/parent/allowances/${id}`, {
+    method: "DELETE",
+  });
+}
+
+export function apiUpdateParentAllowance(
+  id: string,
+  input: {
+    childId: string;
+    title: string;
+    amount: number;
+    availableOn: string;
+    notes?: string;
+  }
+) {
+  return request<{ message: string; parentBalance?: number }>(`/api/parent/allowances/${id}`, {
+    method: "PATCH",
     body: JSON.stringify(input),
   });
 }

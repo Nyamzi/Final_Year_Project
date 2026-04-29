@@ -155,12 +155,19 @@ model Budget {
   id             String      @id @default(cuid())
   childId        String
   monthlyLimit   Float
+  periodType     BudgetPeriod @default(monthly)
   isActive       Boolean     @default(true)
   periodStart    DateTime    @default(now())
   periodEnd      DateTime?
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
   child          ChildProfile @relation(fields: [childId], references: [id], onDelete: Cascade)
+}
+
+enum BudgetPeriod {
+  weekly
+  monthly
+  quarterly
 }
 
 model Achievement {
