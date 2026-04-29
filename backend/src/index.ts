@@ -1,0 +1,65 @@
+import { prisma } from "./db";
+
+import express from "express";
+import cors from "cors";
+import dotenv from "dotenv";
+import { errorHandler } from "./middleware/auth";
+import authRoutes from "./routes/auth";
+import childRoutes from "./routes/child";
+import parentRoutes from "./routes/parent";
+import adminRoutes from "./routes/admin";
+import actionRoutes from "./routes/actions";
+
+dotenv.config();
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.use(cors({
+  origin: [
+    "http://localhost:3000",
+    "http://localhost:8081",
+    "http://localhost:8082",
+    "http://localhost:8083",
+    "http://localhost:8084",
+    "http://localhost:8085",
+    "http://localhost:19006",
+  ],
+  credentials: true,
+}));
+app.use(express.json());
+
+import cookieParser from "cookie-parser";
+app.use(cookieParser());
+
+// Routes
+app.use("/api/auth", authRoutes);
+app.use("/api/child", childRoutes);
+app.use("/api/parent", parentRoutes);
+app.use("/api/admin", adminRoutes);
+app.use("/api/actions", actionRoutes);
+
+// Health check
+app.get("/health", (req, res) => {
+  res.json({ status: "ok" });
+});
+
+// Error handling
+app.use(errorHandler);
+
+// Initialize database and start server
+async function startServer() {
+  try {
+    await prisma.$connect();
+    console.log("✅ Database connected");
+    app.listen(PORT, () => {
+      console.log(`✅ Server running on http://localhost:${PORT}`);
+    });
+  } catch (error) {
+    console.error("Failed to start server:", error);
+    process.exit(1);
+  }
+}
+
+startServer();
+

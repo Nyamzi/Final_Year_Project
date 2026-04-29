@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "User" ADD COLUMN "accountBalance" REAL NOT NULL DEFAULT 0;
+ALTER TABLE "User" ADD COLUMN "totalDeposited" REAL NOT NULL DEFAULT 0;
