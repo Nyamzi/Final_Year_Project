@@ -1,6 +1,6 @@
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useState } from "react";
-import { SafeAreaView, ScrollView, StyleSheet, Text } from "react-native";
+import { Platform, SafeAreaView, ScrollView, StyleSheet, Text } from "react-native";
 import { apiLogout, apiMe, setAuthToken, UserRole } from "./src/lib/api";
 import { LoginScreen } from "./src/screens/auth/login-screen";
 import { RegisterScreen } from "./src/screens/auth/register-screen";
@@ -26,6 +26,17 @@ export default function App() {
       try {
         const data = await apiMe();
         if (!mounted) return;
+        if (data.user.role === "admin" && Platform.OS !== "web") {
+          try {
+            await apiLogout();
+          } catch {
+            // Clear local session even if network logout fails.
+          }
+          setAuthToken(null);
+          setSession(null);
+          setView("login");
+          return;
+        }
         setSession({ email: data.user.email, role: data.user.role });
         setView("dashboard");
       } catch {
@@ -91,7 +102,9 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.bg,
   },
   container: {
+    flexGrow: 1,
     padding: 16,
+    justifyContent: "center",
     gap: 12,
   },
   loadingText: {

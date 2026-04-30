@@ -2,8 +2,9 @@ import { Router } from "express";
 import { prisma } from "../db";
 import { authMiddleware, AuthenticatedRequest, requireRole } from "../middleware/auth";
 import { z } from "zod";
-import { BudgetPeriod, Role, TransactionStatus, TransactionType } from "@prisma/client";
+import { BudgetPeriod, GoalStatus, Prisma, Role, TransactionStatus, TransactionType } from "@prisma/client";
 import { hashPassword } from "../lib/auth";
+import PDFDocument from "pdfkit";
 
 const router = Router();
 
@@ -65,11 +66,57 @@ const parentDepositSchema = z.object({
   amount: z.number().positive(),
 });
 
+const childPasswordUpdateSchema = z.object({
+  newPassword: z.string().min(8),
+  confirmPassword: z.string().min(8),
+});
+
+const assignLearningLessonSchema = z.object({
+  childId: z.string().min(1),
+  lessonId: z.string().min(1),
+  studyStartAt: z.string().min(1),
+  studyEndAt: z.string().min(1),
+});
+
 function parseOptionalDate(value?: string): Date | null | undefined {
   if (!value) return null;
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return undefined;
   return parsed;
+}
+
+type ParentReportRange = "this_month" | "last_30_days" | "all_time";
+type ParentReportExportType =
+  | "parent-summary"
+  | "children-overview"
+  | "transactions"
+  | "goals"
+  | "chores"
+  | "allowances"
+  | "learning"
+  | "support"
+  | "full-export";
+type StatementIncludeField = "date" | "child" | "type" | "status" | "description" | "amount";
+
+function getFromDateForRange(range: ParentReportRange): Date | null {
+  const now = new Date();
+  if (range === "all_time") return null;
+  if (range === "last_30_days") return new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  return new Date(now.getFullYear(), now.getMonth(), 1);
+}
+
+function escapeCsvValue(value: string | number | boolean | null | undefined): string {
+  if (value === null || value === undefined) return "";
+  const text = String(value).replace(/"/g, "\"\"");
+  return /[",\n]/.test(text) ? `"${text}"` : text;
+}
+
+function toCsv(rows: Array<Record<string, string | number | boolean | null | undefined>>): string {
+  if (rows.length === 0) return "";
+  const headers = Object.keys(rows[0]);
+  const headerRow = headers.map((header) => escapeCsvValue(header)).join(",");
+  const dataRows = rows.map((row) => headers.map((header) => escapeCsvValue(row[header])).join(","));
+  return [headerRow, ...dataRows].join("\n");
 }
 
 async function processDueAllowancesForParent(parentId: string) {
@@ -286,6 +333,39 @@ router.post("/transactions/:id/decision", authMiddleware, requireRole("parent"),
             data: {
               balance: transaction.wallet.balance + amount,
               totalEarned: transaction.wallet.totalEarned + amount,
+            },
+          });
+        } else if (transaction.withdrawalSource === "goal" && transaction.savingsGoalId) {
+          const goal = await tx.savingsGoal.findFirst({
+            where: {
+              id: transaction.savingsGoalId,
+              childId: transaction.childId,
+            },
+          });
+
+          if (!goal) {
+            throw new Error("Savings goal not found for this withdrawal");
+          }
+
+          if (Number(goal.currentAmount) < Number(amount)) {
+            throw new Error("Savings goal does not have enough saved money");
+          }
+
+          const remainingGoalAmount = Math.max(0, Number(goal.currentAmount) - Number(amount));
+
+          await tx.savingsGoal.update({
+            where: { id: goal.id },
+            data: {
+              currentAmount: remainingGoalAmount,
+              status: GoalStatus.completed,
+              completedAt: goal.completedAt ?? new Date(),
+            },
+          });
+
+          await tx.wallet.update({
+            where: { id: transaction.walletId },
+            data: {
+              totalSpent: transaction.wallet.totalSpent + amount,
             },
           });
         } else {
@@ -830,13 +910,24 @@ router.post("/deposit", authMiddleware, requireRole("parent"), async (req: Authe
       return res.status(400).json({ error: "Invalid deposit payload" });
     }
 
-    const updated = await prisma.user.update({
-      where: { id: req.user!.userId },
-      data: {
-        accountBalance: { increment: parsed.data.amount },
-        totalDeposited: { increment: parsed.data.amount },
-      },
-      select: { accountBalance: true, totalDeposited: true },
+    const updated = await prisma.$transaction(async (tx) => {
+      const parent = await tx.user.update({
+        where: { id: req.user!.userId },
+        data: {
+          accountBalance: { increment: parsed.data.amount },
+          totalDeposited: { increment: parsed.data.amount },
+        },
+        select: { accountBalance: true, totalDeposited: true },
+      });
+
+      await tx.parentDeposit.create({
+        data: {
+          parentId: req.user!.userId,
+          amount: parsed.data.amount,
+        },
+      });
+
+      return parent;
     });
 
     res.status(201).json({
@@ -880,6 +971,7 @@ router.get("/children/:childId/savings-goals", authMiddleware, requireRole("pare
         currentAmount: Number(g.currentAmount),
         status: g.status,
         targetDate: g.targetDate?.toISOString() ?? null,
+        completedAt: g.completedAt?.toISOString() ?? null,
       })),
     });
   } catch (error) {
@@ -925,6 +1017,7 @@ router.post("/children/:childId/savings-goals", authMiddleware, requireRole("par
         currentAmount: Number(goal.currentAmount),
         status: goal.status,
         targetDate: goal.targetDate?.toISOString() ?? null,
+        completedAt: goal.completedAt?.toISOString() ?? null,
       },
     });
   } catch (error) {
@@ -946,6 +1039,114 @@ router.get("/learning/lessons", authMiddleware, requireRole("parent"), async (_r
   } catch (error) {
     console.error("Get parent learning lessons error:", error);
     res.status(500).json({ error: "Failed to fetch learning lessons" });
+  }
+});
+
+router.get("/learning/assignments", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
+  try {
+    const assignments = await prisma.childLessonAssignment.findMany({
+      where: { parentId: req.user!.userId },
+      include: { child: true, lesson: true },
+      orderBy: { assignedAt: "desc" },
+    });
+
+    res.json({
+      assignments: assignments.map((assignment) => ({
+        assignmentId: assignment.id,
+        childId: assignment.childId,
+        childName: assignment.child.nickname,
+        lessonId: assignment.lessonId,
+        lessonTitle: assignment.lesson.title,
+        resourceType: assignment.lesson.resourceType,
+        status: assignment.status,
+        progressPercent: assignment.progressPercent,
+        firstViewedAt: assignment.firstViewedAt?.toISOString() ?? null,
+        lastViewedAt: assignment.lastViewedAt?.toISOString() ?? null,
+        completedAt: assignment.completedAt?.toISOString() ?? null,
+        assignedAt: assignment.assignedAt.toISOString(),
+      })),
+    });
+  } catch (error) {
+    console.error("Get learning assignments error:", error);
+    res.status(500).json({ error: "Failed to fetch learning assignments" });
+  }
+});
+
+router.post("/learning/assignments", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
+  try {
+    const parsed = assignLearningLessonSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid learning assignment payload" });
+    }
+
+    const studyStartAt = new Date(parsed.data.studyStartAt);
+    const studyEndAt = new Date(parsed.data.studyEndAt);
+    if (Number.isNaN(studyStartAt.getTime()) || Number.isNaN(studyEndAt.getTime())) {
+      return res.status(400).json({ error: "Invalid study date range" });
+    }
+    if (studyEndAt < studyStartAt) {
+      return res.status(400).json({ error: "Study end date must be after start date" });
+    }
+    const studyDays = Math.max(1, Math.ceil((studyEndAt.getTime() - studyStartAt.getTime()) / (1000 * 60 * 60 * 24)));
+
+    const child = await prisma.childProfile.findFirst({
+      where: {
+        id: parsed.data.childId,
+        parentId: req.user!.userId,
+      },
+      select: { id: true, nickname: true },
+    });
+    if (!child) {
+      return res.status(404).json({ error: "Child not found" });
+    }
+
+    const lesson = await prisma.lesson.findFirst({
+      where: {
+        id: parsed.data.lessonId,
+        isPublished: true,
+      },
+      select: { id: true, title: true },
+    });
+    if (!lesson) {
+      return res.status(404).json({ error: "Published lesson not found" });
+    }
+
+    const assignment = await prisma.childLessonAssignment.upsert({
+      where: {
+        childId_lessonId: {
+          childId: child.id,
+          lessonId: lesson.id,
+        },
+      },
+      update: {
+        parentId: req.user!.userId,
+        status: "assigned",
+        progressPercent: 0,
+        studyDays,
+        studyStartAt,
+        studyEndAt,
+        firstViewedAt: null,
+        lastViewedAt: null,
+        completedAt: null,
+      },
+      create: {
+        parentId: req.user!.userId,
+        childId: child.id,
+        lessonId: lesson.id,
+        status: "assigned",
+        studyDays,
+        studyStartAt,
+        studyEndAt,
+      },
+    });
+
+    res.status(201).json({
+      message: `${lesson.title} assigned to ${child.nickname} from ${studyStartAt.toLocaleDateString()} to ${studyEndAt.toLocaleDateString()}`,
+      assignmentId: assignment.id,
+    });
+  } catch (error) {
+    console.error("Assign learning lesson error:", error);
+    res.status(500).json({ error: "Failed to assign learning lesson" });
   }
 });
 
@@ -988,6 +1189,45 @@ router.patch("/account", authMiddleware, requireRole("parent"), async (req: Auth
   } catch (error) {
     console.error("Update account error:", error);
     res.status(500).json({ error: "Failed to update profile" });
+  }
+});
+
+router.patch("/children/:childId/password", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
+  try {
+    const parsed = childPasswordUpdateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid password payload" });
+    }
+
+    if (parsed.data.newPassword !== parsed.data.confirmPassword) {
+      return res.status(400).json({ error: "Password confirmation does not match" });
+    }
+
+    const child = await prisma.childProfile.findFirst({
+      where: {
+        id: req.params.childId,
+        parentId: req.user!.userId,
+      },
+      include: {
+        childUser: true,
+      },
+    });
+
+    if (!child) {
+      return res.status(404).json({ error: "Child not found" });
+    }
+
+    const passwordHash = await hashPassword(parsed.data.newPassword);
+
+    await prisma.user.update({
+      where: { id: child.childUser.id },
+      data: { passwordHash },
+    });
+
+    res.json({ message: `Password updated for ${child.nickname}` });
+  } catch (error) {
+    console.error("Update child password error:", error);
+    res.status(500).json({ error: "Failed to update child password" });
   }
 });
 
@@ -1075,7 +1315,7 @@ router.get("/notifications", authMiddleware, requireRole("parent"), async (req: 
   try {
     await processDueAllowancesForParent(req.user!.userId);
 
-    const [pendingTx, recentTx, recentAllowances, recentChores] = await Promise.all([
+    const [pendingTx, recentTx, recentAllowances, recentChores, recentDeposits] = await Promise.all([
       prisma.transaction.findMany({
         where: { status: TransactionStatus.pending, child: { parentId: req.user!.userId } },
         include: { child: true },
@@ -1098,6 +1338,11 @@ router.get("/notifications", authMiddleware, requireRole("parent"), async (req: 
         where: { parentId: req.user!.userId, status: "completed" },
         include: { child: true },
         orderBy: { updatedAt: "desc" },
+        take: 5,
+      }),
+      prisma.parentDeposit.findMany({
+        where: { parentId: req.user!.userId },
+        orderBy: { createdAt: "desc" },
         take: 5,
       }),
     ]);
@@ -1141,15 +1386,144 @@ router.get("/notifications", authMiddleware, requireRole("parent"), async (req: 
         message: `${c.child.nickname} completed chore "${c.title}"`,
         createdAt: c.updatedAt,
       })),
+      ...recentDeposits.map((d) => ({
+        id: `deposit-${d.id}`,
+        type: "deposit",
+        message: `You deposited UGX ${Number(d.amount).toLocaleString()} into your account`,
+        createdAt: d.createdAt,
+      })),
     ]
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
       .slice(0, 30)
       .map((item) => ({ ...item, createdAt: item.createdAt.toISOString() }));
 
-    res.json({ notifications: notificationItems });
+    const readRows = await prisma.notificationRead.findMany({
+      where: {
+        userId: req.user!.userId,
+        notificationId: { in: notificationItems.map((item) => item.id) },
+      },
+      select: { notificationId: true },
+    });
+    const readSet = new Set(readRows.map((row) => row.notificationId));
+
+    const notifications = notificationItems.map((item) => ({
+      ...item,
+      isRead: readSet.has(item.id),
+    }));
+
+    const unreadCount = notifications.filter((item) => !item.isRead).length;
+
+    res.json({ notifications, unreadCount });
   } catch (error) {
     console.error("Get parent notifications error:", error);
     res.status(500).json({ error: "Failed to fetch notifications" });
+  }
+});
+
+router.patch("/notifications/mark-read", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
+  try {
+    const parsed = z.object({ notificationIds: z.array(z.string().min(1)).min(1) }).safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid notification payload" });
+    }
+
+    await prisma.$transaction(
+      parsed.data.notificationIds.map((notificationId) =>
+        prisma.notificationRead.upsert({
+          where: {
+            userId_notificationId: {
+              userId: req.user!.userId,
+              notificationId,
+            },
+          },
+          create: {
+            userId: req.user!.userId,
+            notificationId,
+          },
+          update: {
+            readAt: new Date(),
+          },
+        })
+      )
+    );
+
+    res.json({ message: "Notifications marked as read" });
+  } catch (error) {
+    console.error("Mark notifications read error:", error);
+    res.status(500).json({ error: "Failed to mark notifications as read" });
+  }
+});
+
+router.patch("/notifications/mark-all-read", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
+  try {
+    await processDueAllowancesForParent(req.user!.userId);
+
+    const [pendingTx, recentTx, recentAllowances, recentChores, recentDeposits] = await Promise.all([
+      prisma.transaction.findMany({
+        where: { status: TransactionStatus.pending, child: { parentId: req.user!.userId } },
+        include: { child: true },
+        orderBy: { createdAt: "desc" },
+        take: 5,
+      }),
+      prisma.transaction.findMany({
+        where: { child: { parentId: req.user!.userId } },
+        include: { child: true },
+        orderBy: { createdAt: "desc" },
+        take: 8,
+      }),
+      prisma.allowanceSchedule.findMany({
+        where: { parentId: req.user!.userId },
+        include: { child: true },
+        orderBy: { updatedAt: "desc" },
+        take: 5,
+      }),
+      prisma.choreAssignment.findMany({
+        where: { parentId: req.user!.userId, status: "completed" },
+        include: { child: true },
+        orderBy: { updatedAt: "desc" },
+        take: 5,
+      }),
+      prisma.parentDeposit.findMany({
+        where: { parentId: req.user!.userId },
+        orderBy: { createdAt: "desc" },
+        take: 5,
+      }),
+    ]);
+
+    const notificationIds = [
+      ...pendingTx.map((tx) => `pending-${tx.id}`),
+      ...recentTx.filter((tx) => tx.status !== TransactionStatus.pending).map((tx) => `tx-${tx.id}`),
+      ...recentAllowances.map((a) => `allowance-${a.id}`),
+      ...recentChores.map((c) => `chore-${c.id}`),
+      ...recentDeposits.map((d) => `deposit-${d.id}`),
+    ];
+
+    if (notificationIds.length > 0) {
+      await prisma.$transaction(
+        notificationIds.map((notificationId) =>
+          prisma.notificationRead.upsert({
+            where: {
+              userId_notificationId: {
+                userId: req.user!.userId,
+                notificationId,
+              },
+            },
+            create: {
+              userId: req.user!.userId,
+              notificationId,
+            },
+            update: {
+              readAt: new Date(),
+            },
+          })
+        )
+      );
+    }
+
+    res.json({ message: "All notifications marked as read" });
+  } catch (error) {
+    console.error("Mark all notifications read error:", error);
+    res.status(500).json({ error: "Failed to mark all notifications as read" });
   }
 });
 
@@ -1157,43 +1531,491 @@ router.get("/notifications", authMiddleware, requireRole("parent"), async (req: 
 
 router.get("/reports/summary", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
   try {
-    const [transactions, goals, chores] = await Promise.all([
+    const range = typeof req.query.range === "string" ? req.query.range : "this_month";
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const last30Days = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const fromDate = range === "all_time" ? null : range === "last_30_days" ? last30Days : startOfMonth;
+
+    const [parent, transactions, goals, chores, wallets, deposits, activeAllowances] = await Promise.all([
+      prisma.user.findUnique({
+        where: { id: req.user!.userId },
+        select: {
+          accountBalance: true,
+          totalDeposited: true,
+          parentChildren: { select: { id: true } },
+        },
+      }),
       prisma.transaction.findMany({
-        where: { child: { parentId: req.user!.userId } },
-        include: { child: true },
+        where: {
+          child: { parentId: req.user!.userId },
+          ...(fromDate ? { createdAt: { gte: fromDate } } : {}),
+        },
       }),
       prisma.savingsGoal.findMany({
-        where: { child: { parentId: req.user!.userId } },
+        where: {
+          child: { parentId: req.user!.userId },
+          status: "completed",
+          ...(fromDate ? { updatedAt: { gte: fromDate } } : {}),
+        },
       }),
       prisma.choreAssignment.findMany({
-        where: { parentId: req.user!.userId },
+        where: {
+          parentId: req.user!.userId,
+          status: "completed",
+          ...(fromDate ? { completedAt: { gte: fromDate } } : {}),
+        },
+      }),
+      prisma.wallet.findMany({
+        where: { child: { parentId: req.user!.userId } },
+        select: {
+          balance: true,
+          totalEarned: true,
+          totalSpent: true,
+        },
+      }),
+      prisma.parentDeposit.findMany({
+        where: {
+          parentId: req.user!.userId,
+          ...(fromDate ? { createdAt: { gte: fromDate } } : {}),
+        },
+        select: { amount: true },
+      }),
+      prisma.allowanceSchedule.findMany({
+        where: {
+          parentId: req.user!.userId,
+          isActive: true,
+        },
+        select: { amount: true },
       }),
     ]);
 
+    if (!parent) {
+      return res.status(404).json({ error: "Parent account not found" });
+    }
+
     const approvedTransactions = transactions.filter((tx) => tx.status === TransactionStatus.approved);
     const pendingCount = transactions.filter((tx) => tx.status === TransactionStatus.pending).length;
-    const totalSpent = approvedTransactions
+    const childrenTotalSpent = approvedTransactions
       .filter((tx) => tx.type === TransactionType.spend)
       .reduce((sum, tx) => sum + Number(tx.amount), 0);
-    const totalEarned = approvedTransactions
+    const childrenTotalEarned = approvedTransactions
       .filter((tx) => tx.type === TransactionType.earn)
       .reduce((sum, tx) => sum + Number(tx.amount), 0);
-    const goalsCompleted = goals.filter((g) => g.status === "completed").length;
-    const choresCompleted = chores.filter((c) => c.status === "completed").length;
+    const goalsCompleted = goals.length;
+    const choresCompleted = chores.length;
+
+    const totalWalletBalance = wallets.reduce((sum, wallet) => sum + Number(wallet.balance), 0);
+    const walletLifetimeEarned = wallets.reduce((sum, wallet) => sum + Number(wallet.totalEarned), 0);
+    const walletLifetimeSpent = wallets.reduce((sum, wallet) => sum + Number(wallet.totalSpent), 0);
+
+    const totalDeposits = deposits.reduce((sum, item) => sum + Number(item.amount), 0);
+    const reservedForActiveAllowances = activeAllowances.reduce((sum, item) => sum + Number(item.amount), 0);
 
     res.json({
       summary: {
-        approvedCount: approvedTransactions.length,
-        pendingCount,
-        totalSpent,
-        totalEarned,
-        goalsCompleted,
-        choresCompleted,
+        parent: {
+          currentBalance: Number(parent.accountBalance),
+          totalDeposited: Number(parent.totalDeposited),
+          depositTransactions: deposits.length,
+          totalDepositAmount: totalDeposits,
+          reservedForActiveAllowances,
+          totalSentToChildren: childrenTotalEarned,
+        },
+        children: {
+          childCount: parent.parentChildren.length,
+          approvedCount: approvedTransactions.length,
+          pendingCount,
+          totalEarned: childrenTotalEarned,
+          totalSpent: childrenTotalSpent,
+          walletBalance: totalWalletBalance,
+          lifetimeEarned: walletLifetimeEarned,
+          lifetimeSpent: walletLifetimeSpent,
+          goalsCompleted,
+          choresCompleted,
+        },
       },
     });
   } catch (error) {
     console.error("Get parent report summary error:", error);
     res.status(500).json({ error: "Failed to fetch report summary" });
+  }
+});
+
+router.get("/reports/export", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
+  try {
+    const range = (typeof req.query.range === "string" ? req.query.range : "this_month") as ParentReportRange;
+    const type = (typeof req.query.type === "string" ? req.query.type : "full-export") as ParentReportExportType;
+    const allowedTypes: ParentReportExportType[] = [
+      "parent-summary",
+      "children-overview",
+      "transactions",
+      "goals",
+      "chores",
+      "allowances",
+      "learning",
+      "support",
+      "full-export",
+    ];
+    const allowedRanges: ParentReportRange[] = ["this_month", "last_30_days", "all_time"];
+    if (!allowedTypes.includes(type)) {
+      return res.status(400).json({ error: "Invalid report export type" });
+    }
+    if (!allowedRanges.includes(range)) {
+      return res.status(400).json({ error: "Invalid report range" });
+    }
+
+    await processDueAllowancesForParent(req.user!.userId);
+    const fromDate = getFromDateForRange(range);
+    const suffix = range === "this_month" ? "this-month" : range === "last_30_days" ? "last-30-days" : "all-time";
+
+    const [parent, children, transactions, goals, chores, allowances, learningAssignments, supportTickets] = await Promise.all([
+      prisma.user.findUnique({
+        where: { id: req.user!.userId },
+        select: {
+          accountBalance: true,
+          totalDeposited: true,
+          parentDeposits: {
+            where: fromDate ? { createdAt: { gte: fromDate } } : undefined,
+            select: { amount: true },
+          },
+        },
+      }),
+      prisma.childProfile.findMany({
+        where: { parentId: req.user!.userId },
+        include: { wallet: true },
+        orderBy: { createdAt: "desc" },
+      }),
+      prisma.transaction.findMany({
+        where: {
+          child: { parentId: req.user!.userId },
+          ...(fromDate ? { createdAt: { gte: fromDate } } : {}),
+        },
+        include: { child: true },
+        orderBy: { createdAt: "desc" },
+      }),
+      prisma.savingsGoal.findMany({
+        where: {
+          child: { parentId: req.user!.userId },
+          ...(fromDate ? { updatedAt: { gte: fromDate } } : {}),
+        },
+        include: { child: true },
+        orderBy: { createdAt: "desc" },
+      }),
+      prisma.choreAssignment.findMany({
+        where: {
+          parentId: req.user!.userId,
+          ...(fromDate ? { createdAt: { gte: fromDate } } : {}),
+        },
+        include: { child: true },
+        orderBy: { createdAt: "desc" },
+      }),
+      prisma.allowanceSchedule.findMany({
+        where: {
+          parentId: req.user!.userId,
+          ...(fromDate ? { createdAt: { gte: fromDate } } : {}),
+        },
+        include: { child: true },
+        orderBy: { createdAt: "desc" },
+      }),
+      prisma.childLessonAssignment.findMany({
+        where: {
+          parentId: req.user!.userId,
+          ...(fromDate ? { assignedAt: { gte: fromDate } } : {}),
+        },
+        include: { child: true, lesson: true },
+        orderBy: { assignedAt: "desc" },
+      }),
+      prisma.supportTicket.findMany({
+        where: {
+          parentId: req.user!.userId,
+          ...(fromDate ? { createdAt: { gte: fromDate } } : {}),
+        },
+        orderBy: { createdAt: "desc" },
+      }),
+    ]);
+
+    if (!parent) {
+      return res.status(404).json({ error: "Parent account not found" });
+    }
+
+    const goalsByChild = new Map<string, { currentAmount: number; completed: number }>();
+    for (const goal of goals) {
+      const existing = goalsByChild.get(goal.childId) ?? { currentAmount: 0, completed: 0 };
+      goalsByChild.set(goal.childId, {
+        currentAmount: existing.currentAmount + Number(goal.currentAmount),
+        completed: existing.completed + (goal.status === GoalStatus.completed ? 1 : 0),
+      });
+    }
+    const completedChoresByChild = new Map<string, number>();
+    for (const chore of chores) {
+      if (chore.status !== "completed") continue;
+      completedChoresByChild.set(chore.childId, (completedChoresByChild.get(chore.childId) ?? 0) + 1);
+    }
+
+    const totalDepositsInRange = parent.parentDeposits.reduce((sum, row) => sum + Number(row.amount), 0);
+    const approvedTransactions = transactions.filter((tx) => tx.status === TransactionStatus.approved);
+    const totalSentToChildren = approvedTransactions
+      .filter((tx) => tx.type === TransactionType.earn)
+      .reduce((sum, tx) => sum + Number(tx.amount), 0);
+    const pendingApprovals = transactions.filter((tx) => tx.status === TransactionStatus.pending).length;
+    const reservedForActiveAllowances = allowances.filter((item) => item.isActive).reduce((sum, item) => sum + Number(item.amount), 0);
+
+    let rows: Array<Record<string, string | number | boolean | null | undefined>> = [];
+    let filename = `report-${type}-${suffix}.csv`;
+
+    if (type === "parent-summary") {
+      rows = [{
+        range: suffix,
+        parentBalance: Number(parent.accountBalance),
+        totalDepositedLifetime: Number(parent.totalDeposited),
+        depositsInRange: totalDepositsInRange,
+        pendingApprovals,
+        reservedForActiveAllowances,
+        totalSentToChildren,
+      }];
+    } else if (type === "children-overview") {
+      rows = children.map((child) => {
+        const goalStats = goalsByChild.get(child.id) ?? { currentAmount: 0, completed: 0 };
+        const walletBalance = Number(child.wallet?.balance ?? 0);
+        const totalSaved = walletBalance + goalStats.currentAmount;
+        const completedGoals = goalStats.completed;
+        const completedChores = completedChoresByChild.get(child.id) ?? 0;
+        return {
+          childId: child.id,
+          childName: child.nickname,
+          age: child.age,
+          walletBalance,
+          walletTotalEarned: Number(child.wallet?.totalEarned ?? 0),
+          walletTotalSpent: Number(child.wallet?.totalSpent ?? 0),
+          savedInGoals: goalStats.currentAmount,
+          totalSaved,
+          goalsCompleted: completedGoals,
+          badgesEarned: completedGoals + completedChores,
+        };
+      });
+    } else if (type === "transactions") {
+      rows = transactions.map((tx) => ({
+        transactionId: tx.id,
+        childId: tx.childId,
+        childName: tx.child.nickname,
+        type: tx.type,
+        status: tx.status,
+        amount: Number(tx.amount),
+        description: tx.description ?? "",
+        createdAt: tx.createdAt.toISOString(),
+      }));
+    } else if (type === "goals") {
+      rows = goals.map((goal) => ({
+        goalId: goal.id,
+        childId: goal.childId,
+        childName: goal.child.nickname,
+        title: goal.title,
+        targetAmount: Number(goal.targetAmount),
+        currentAmount: Number(goal.currentAmount),
+        status: goal.status,
+        targetDate: goal.targetDate?.toISOString() ?? "",
+        completedAt: goal.completedAt?.toISOString() ?? "",
+      }));
+    } else if (type === "chores") {
+      rows = chores.map((chore) => ({
+        choreId: chore.id,
+        childId: chore.childId,
+        childName: chore.child.nickname,
+        title: chore.title,
+        status: chore.status,
+        rewardAmount: Number(chore.rewardAmount),
+        dueDate: chore.dueDate?.toISOString() ?? "",
+        completedAt: chore.completedAt?.toISOString() ?? "",
+      }));
+    } else if (type === "allowances") {
+      rows = allowances.map((item) => ({
+        allowanceId: item.id,
+        childId: item.childId,
+        childName: item.child.nickname,
+        title: item.title,
+        amount: Number(item.amount),
+        availableOn: item.availableOn.toISOString(),
+        isActive: item.isActive,
+        notes: item.notes ?? "",
+      }));
+    } else if (type === "learning") {
+      rows = learningAssignments.map((item) => ({
+        assignmentId: item.id,
+        childId: item.childId,
+        childName: item.child.nickname,
+        lessonId: item.lessonId,
+        lessonTitle: item.lesson.title,
+        status: item.status,
+        progressPercent: item.progressPercent,
+        assignedAt: item.assignedAt.toISOString(),
+        firstViewedAt: item.firstViewedAt?.toISOString() ?? "",
+        lastViewedAt: item.lastViewedAt?.toISOString() ?? "",
+        completedAt: item.completedAt?.toISOString() ?? "",
+      }));
+    } else if (type === "support") {
+      rows = supportTickets.map((item) => ({
+        ticketId: item.id,
+        issueType: item.issueType,
+        status: item.status,
+        createdAt: item.createdAt.toISOString(),
+        message: item.message,
+      }));
+    } else {
+      filename = `full-report-export-${suffix}.csv`;
+      rows = [
+        {
+          section: "summary",
+          key: "parent_balance",
+          value: Number(parent.accountBalance),
+        },
+        {
+          section: "summary",
+          key: "total_sent_to_children",
+          value: totalSentToChildren,
+        },
+        ...children.map((child) => {
+          const goalStats = goalsByChild.get(child.id) ?? { currentAmount: 0, completed: 0 };
+          const walletBalance = Number(child.wallet?.balance ?? 0);
+          const totalSaved = walletBalance + goalStats.currentAmount;
+          const completedGoals = goalStats.completed;
+          const completedChores = completedChoresByChild.get(child.id) ?? 0;
+          return {
+            section: "child_overview",
+            key: child.nickname,
+            value: `saved=${totalSaved}; goals=${completedGoals}; badges=${completedGoals + completedChores}`,
+          };
+        }),
+        ...transactions.slice(0, 300).map((tx) => ({
+          section: "transaction",
+          key: tx.id,
+          value: `${tx.child.nickname}; ${tx.type}; ${tx.status}; ${Number(tx.amount)}`,
+        })),
+      ];
+    }
+
+    const csv = toCsv(rows);
+    return res.json({
+      filename,
+      csv,
+      type,
+      range,
+      rowCount: rows.length,
+    });
+  } catch (error) {
+    console.error("Export parent report error:", error);
+    res.status(500).json({ error: "Failed to export parent report" });
+  }
+});
+
+router.get("/transactions/statement-pdf", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
+  try {
+    const childId = typeof req.query.childId === "string" ? req.query.childId : "all";
+    const txType = typeof req.query.txType === "string" ? req.query.txType : "all";
+    const txStatus = typeof req.query.txStatus === "string" ? req.query.txStatus : "all";
+    const includeRaw = typeof req.query.include === "string" ? req.query.include : "date,child,type,status,description,amount";
+    const includeSet = new Set(includeRaw.split(",").map((item) => item.trim()).filter(Boolean));
+    const allowedInclude: StatementIncludeField[] = ["date", "child", "type", "status", "description", "amount"];
+    const includeFields = allowedInclude.filter((field) => includeSet.has(field));
+
+    const whereClause: Prisma.TransactionWhereInput = {
+      child: { parentId: req.user!.userId },
+      ...(childId !== "all" ? { childId } : {}),
+      ...(txType === "earn" || txType === "spend" ? { type: txType as TransactionType } : {}),
+      ...(txStatus === "pending" || txStatus === "approved" || txStatus === "rejected"
+        ? { status: txStatus as TransactionStatus }
+        : {}),
+    };
+
+    const [transactions, parent, selectedChild] = await Promise.all([
+      prisma.transaction.findMany({
+        where: whereClause,
+        include: { child: true },
+        orderBy: { createdAt: "desc" },
+      }),
+      prisma.user.findUnique({
+        where: { id: req.user!.userId },
+        select: { fullName: true, email: true },
+      }),
+      childId !== "all"
+        ? prisma.childProfile.findFirst({
+            where: { id: childId, parentId: req.user!.userId },
+            select: { nickname: true },
+          })
+        : Promise.resolve(null),
+    ]);
+
+    if (!parent) {
+      return res.status(404).json({ error: "Parent account not found" });
+    }
+
+    const doc = new PDFDocument({ margin: 36, size: "A4" });
+    const chunks: Buffer[] = [];
+    doc.on("data", (chunk) => chunks.push(chunk));
+
+    const generatedAt = new Date();
+    const childLabel = childId === "all" ? "All children" : selectedChild?.nickname ?? "Selected child";
+    const typeLabel = txType === "all" ? "All types" : txType;
+    const statusLabel = txStatus === "all" ? "All statuses" : txStatus;
+
+    doc.fontSize(18).text("KidsApp Transaction Statement", { align: "left" });
+    doc.moveDown(0.3);
+    doc.fontSize(10).text(`Generated: ${generatedAt.toLocaleString()}`);
+    doc.text(`Parent: ${parent.fullName ?? parent.email}`);
+    doc.text(`Filters: Child=${childLabel}, Type=${typeLabel}, Status=${statusLabel}`);
+    doc.text(`Records: ${transactions.length}`);
+    doc.moveDown(0.7);
+
+    if (transactions.length === 0) {
+      doc.fontSize(12).text("No transactions found for the selected filters.");
+    } else {
+      transactions.forEach((item, index) => {
+        if (doc.y > 730) {
+          doc.addPage();
+        }
+        doc.fontSize(11).text(`${index + 1}.`, { continued: true }).text(` ${item.child.nickname}`, { continued: true }).text(` - ${Number(item.amount).toLocaleString()} UGX`);
+
+        if (includeFields.includes("date")) {
+          doc.fontSize(9).text(`Date: ${item.createdAt.toLocaleString()}`);
+        }
+        if (includeFields.includes("child")) {
+          doc.fontSize(9).text(`Child: ${item.child.nickname}`);
+        }
+        if (includeFields.includes("type")) {
+          doc.fontSize(9).text(`Type: ${item.type}`);
+        }
+        if (includeFields.includes("status")) {
+          doc.fontSize(9).text(`Status: ${item.status}`);
+        }
+        if (includeFields.includes("description")) {
+          doc.fontSize(9).text(`Description: ${item.description ?? "No description"}`);
+        }
+        if (includeFields.includes("amount")) {
+          doc.fontSize(9).text(`Amount: ${item.type === "earn" ? "+" : "-"} ${Number(item.amount).toLocaleString()} UGX`);
+        }
+
+        doc.moveDown(0.4);
+      });
+    }
+
+    doc.end();
+
+    await new Promise<void>((resolve) => {
+      doc.on("end", () => resolve());
+    });
+
+    const pdfBuffer = Buffer.concat(chunks);
+    const safeDate = generatedAt.toISOString().slice(0, 10);
+    const filename = `transaction-statement-${safeDate}.pdf`;
+    return res.json({
+      filename,
+      mimeType: "application/pdf",
+      pdfBase64: pdfBuffer.toString("base64"),
+      count: transactions.length,
+    });
+  } catch (error) {
+    console.error("Generate transaction statement PDF error:", error);
+    res.status(500).json({ error: "Failed to generate transaction statement PDF" });
   }
 });
 

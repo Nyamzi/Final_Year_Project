@@ -5,14 +5,20 @@ import {
   apiChangePassword,
   apiChildAllowances,
   apiChildChores,
+  apiChildLearningLessons,
   apiChildSavingsGoals,
   apiChildTransactions,
   apiChildWallet,
   apiCompleteChildChore,
+  apiCreateChildWithdrawal,
   apiCreateChildSavingsGoal,
   apiCreateChildTransaction,
   apiFundChildGoal,
   apiLogDashboardAction,
+  apiUpdateChildLearningProgress,
+  API_BASE_URL,
+  ChildAchievementSummary,
+  ChildLearningLesson,
   ChoreSummary,
   SavingsGoalSummary,
   TransactionSummary,
@@ -49,6 +55,17 @@ const tabs: Array<{ key: TabKey; label: string }> = [
   { key: "allowances", label: "Allowances" },
   { key: "actions", label: "Quick Actions" },
   { key: "settings", label: "Settings" },
+];
+
+const webNavItems: Array<{ label: string; key: TabKey; icon: string }> = [
+  { label: "Home", key: "home", icon: "H" },
+  { label: "Wallet", key: "wallet", icon: "$" },
+  { label: "Goals", key: "savings", icon: "*" },
+  { label: "Chores", key: "chores", icon: "+" },
+  { label: "Learn & Earn", key: "learn", icon: "A" },
+  { label: "Transactions", key: "transactions", icon: "T" },
+  { label: "Notifications", key: "notifications", icon: "!" },
+  { label: "Profile", key: "settings", icon: "P" },
 ];
 
 const formatMoney = (value: number) => `UGX ${value.toLocaleString()}`;
@@ -124,6 +141,8 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
   const [transactions, setTransactions] = useState<TransactionSummary[]>([]);
   const [chores, setChores] = useState<ChoreSummary[]>([]);
   const [allowances, setAllowances] = useState<AllowanceSummary[]>([]);
+  const [assignedLessons, setAssignedLessons] = useState<ChildLearningLesson[]>([]);
+  const [achievements, setAchievements] = useState<ChildAchievementSummary[]>([]);
 
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -138,6 +157,11 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
   const [goalAmount, setGoalAmount] = useState("");
   const [fundGoalAmounts, setFundGoalAmounts] = useState<Record<string, string>>({});
   const [fundingGoalId, setFundingGoalId] = useState<string | null>(null);
+  const [showWithdrawForm, setShowWithdrawForm] = useState(false);
+  const [withdrawSource, setWithdrawSource] = useState<"wallet" | "goal">("wallet");
+  const [withdrawAmount, setWithdrawAmount] = useState("");
+  const [withdrawGoalId, setWithdrawGoalId] = useState("");
+  const [withdrawDescription, setWithdrawDescription] = useState("");
 
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -170,8 +194,24 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
   const walletEarned = wallet?.totalEarned ?? 0;
   const walletSpent = wallet?.totalSpent ?? 0;
   const completedGoalsCount = useMemo(
-    () => savingsGoals.filter((goal) => goal.targetAmount > 0 && goal.currentAmount >= goal.targetAmount).length,
+    () => savingsGoals.filter((goal) => goal.status === "completed" || Boolean(goal.completedAt)).length,
     [savingsGoals]
+  );
+  const completedSavingsGoals = useMemo(
+    () => savingsGoals.filter((goal) => goal.status === "completed" || Boolean(goal.completedAt)),
+    [savingsGoals]
+  );
+  const withdrawableCompletedGoals = useMemo(
+    () => completedSavingsGoals.filter((goal) => goal.currentAmount > 0),
+    [completedSavingsGoals]
+  );
+  const activeSavingsGoals = useMemo(
+    () => savingsGoals.filter((goal) => goal.status !== "completed" && !goal.completedAt),
+    [savingsGoals]
+  );
+  const goldenStarCount = useMemo(
+    () => achievements.filter((achievement) => achievement.title.toLowerCase().includes("golden star")).length,
+    [achievements]
   );
   const avgGoalProgress = useMemo(() => {
     if (savingsGoals.length === 0) return 0;
@@ -241,52 +281,48 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
 
     setStatusMessage(`${item} screen is coming soon.`);
   }
-  const allLessons = useMemo(
+  const learningLessons = useMemo(
     () =>
-      savingsGoals.map((goal, index) => ({
-        id: goal.id,
-        title: `${index + 1}. ${goal.title}`,
-        subtitle: index % 2 === 0 ? "Quiz" : "Activity",
-        minutes: `${4 + index} min`,
-        status: index < 2 ? "Completed" : index === 2 ? "In Progress" : "Locked",
-        progress:
-          goal.targetAmount > 0
-            ? Math.min(100, Math.max(0, Math.round((goal.currentAmount / goal.targetAmount) * 100)))
-            : 0,
-      })),
-    [savingsGoals]
+      assignedLessons.map((lesson) => {
+        const completed = lesson.status === "completed";
+        const progress = completed ? 100 : Math.min(99, Math.max(0, lesson.progressPercent));
+        return {
+          ...lesson,
+          id: lesson.assignmentId,
+          subtitle: `${lesson.resourceType.toUpperCase()}${lesson.fileName ? ` • ${lesson.fileName}` : ""}`,
+          statusLabel: completed ? "Completed" : progress > 0 ? "In Progress" : "Ready",
+          progress,
+          resourceLabel: lesson.resourceType === "video" ? "Watch" : lesson.resourceType === "pdf" ? "Open PDF" : "Read",
+        };
+      }),
+    [assignedLessons]
   );
-  const learningLessons = allLessons.length
-    ? allLessons
-    : [
-        { id: "l1", title: "1. What is Money?", subtitle: "Lesson", minutes: "5 min", status: "Completed", progress: 100 },
-        { id: "l2", title: "2. Needs vs Wants", subtitle: "Lesson", minutes: "6 min", status: "In Progress", progress: 80 },
-        { id: "l3", title: "3. Saving Money", subtitle: "Lesson", minutes: "5 min", status: "In Progress", progress: 60 },
-        { id: "l4", title: "4. Earning Money", subtitle: "Lesson", minutes: "7 min", status: "In Progress", progress: 30 },
-        { id: "l5", title: "5. Spending Wisely", subtitle: "Lesson", minutes: "6 min", status: "Locked", progress: 0 },
-        { id: "l6", title: "6. Budgeting Basics", subtitle: "Lesson", minutes: "6 min", status: "Locked", progress: 0 },
-        { id: "l7", title: "7. Sharing & Giving", subtitle: "Lesson", minutes: "5 min", status: "Locked", progress: 0 },
-        { id: "l8", title: "8. Goal Setting", subtitle: "Lesson", minutes: "5 min", status: "Locked", progress: 0 },
-      ];
+  const completedLearningCount = learningLessons.filter((lesson) => lesson.progress >= 100).length;
+  const learningProgressPercent = learningLessons.length
+    ? Math.round(learningLessons.reduce((total, lesson) => total + lesson.progress, 0) / learningLessons.length)
+    : 0;
 
   async function loadDashboardData() {
     setIsLoading(true);
     setErrorMessage("");
 
     try {
-      const [walletData, txData, savingsData, choresData, allowancesData] = await Promise.all([
+      const [walletData, txData, savingsData, choresData, allowancesData, lessonsData] = await Promise.all([
         apiChildWallet(),
         apiChildTransactions(),
         apiChildSavingsGoals(),
         apiChildChores(),
         apiChildAllowances(),
+        apiChildLearningLessons().catch(() => ({ lessons: [] as ChildLearningLesson[] })),
       ]);
 
       setWallet(walletData.wallet);
       setSavingsGoals(walletData.savingsGoals.length > 0 ? walletData.savingsGoals : savingsData.savingsGoals);
+      setAchievements(walletData.achievements ?? []);
       setTransactions(txData.transactions);
       setChores(choresData.chores);
       setAllowances(allowancesData.allowances);
+      setAssignedLessons(lessonsData.lessons);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to load child dashboard";
       setErrorMessage(message);
@@ -450,11 +486,63 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
       setWallet(data.wallet);
       setSavingsGoals((prev) => prev.map((g) => (g.id === goalId ? data.goal : g)));
       setFundGoalAmounts((prev) => ({ ...prev, [goalId]: "" }));
+      await loadDashboardData();
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "Could not fund goal.");
     } finally {
       setIsSubmitting(false);
       setFundingGoalId(null);
+    }
+  }
+
+  async function handleCreateWithdrawal() {
+    const amount = Number(withdrawAmount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setErrorMessage("Enter a valid withdrawal amount.");
+      return;
+    }
+
+    if (withdrawSource === "wallet" && wallet && amount > wallet.balance) {
+      setErrorMessage("You do not have enough money in your wallet.");
+      return;
+    }
+
+    if (withdrawSource === "goal") {
+      const selectedGoal = completedSavingsGoals.find((goal) => goal.id === withdrawGoalId);
+      if (!selectedGoal) {
+        setErrorMessage("Choose a completed goal to withdraw from.");
+        return;
+      }
+      if (amount > selectedGoal.currentAmount) {
+        setErrorMessage("This goal does not have enough saved money.");
+        return;
+      }
+    }
+
+    setIsSubmitting(true);
+    clearMessages();
+
+    try {
+      const data = await apiCreateChildWithdrawal({
+        source: withdrawSource,
+        amount,
+        goalId: withdrawSource === "goal" ? withdrawGoalId : undefined,
+        description: withdrawDescription.trim() || undefined,
+      });
+      setStatusMessage(data.message);
+      setWallet(data.wallet);
+      if (data.goal) {
+        setSavingsGoals((prev) => prev.map((goal) => (goal.id === data.goal?.id ? data.goal : goal)));
+      }
+      setWithdrawAmount("");
+      setWithdrawDescription("");
+      setWithdrawGoalId("");
+      setShowWithdrawForm(false);
+      await loadDashboardData();
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "Could not create withdrawal.");
+    } finally {
+      setIsSubmitting(false);
     }
   }
 
@@ -472,6 +560,97 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
     } finally {
       setIsSubmitting(false);
     }
+  }
+
+  function getLearningResourceUrl(resourceUrl: string | null) {
+    if (!resourceUrl) return "";
+    return resourceUrl.startsWith("http")
+      ? resourceUrl
+      : `${API_BASE_URL}${resourceUrl.startsWith("/") ? resourceUrl : `/${resourceUrl}`}`;
+  }
+
+  function applyLearningProgressUpdate(
+    assignmentId: string,
+    assignment: {
+      status: string;
+      progressPercent: number;
+      firstViewedAt: string | null;
+      lastViewedAt: string | null;
+      completedAt: string | null;
+    }
+  ) {
+    setAssignedLessons((current) =>
+      current.map((lesson) =>
+        lesson.assignmentId === assignmentId
+          ? {
+              ...lesson,
+              status: assignment.status,
+              progressPercent: assignment.progressPercent,
+              firstViewedAt: assignment.firstViewedAt,
+              lastViewedAt: assignment.lastViewedAt,
+              completedAt: assignment.completedAt,
+            }
+          : lesson
+      )
+    );
+  }
+
+  async function updateLearningProgress(lesson: ChildLearningLesson, progressPercent: number) {
+    clearMessages();
+    try {
+      const data = await apiUpdateChildLearningProgress(lesson.assignmentId, progressPercent);
+      applyLearningProgressUpdate(lesson.assignmentId, data.assignment);
+      setStatusMessage(data.message);
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "Could not update lesson progress.");
+    }
+  }
+
+  function openLearningResource(lesson: ChildLearningLesson) {
+    const fullUrl = getLearningResourceUrl(lesson.resourceUrl);
+    if (!fullUrl) {
+      setStatusMessage(`${lesson.title} is ready to read on this page.`);
+      return;
+    }
+
+    const browserRef = globalThis as unknown as { open?: (url: string, target?: string) => void };
+    if (typeof browserRef.open === "function") {
+      browserRef.open(fullUrl, "_blank");
+      return;
+    }
+
+    setStatusMessage(`Open this learning link: ${fullUrl}`);
+  }
+
+  function downloadLearningResource(lesson: ChildLearningLesson) {
+    const fullUrl = getLearningResourceUrl(lesson.resourceUrl);
+    if (!fullUrl) {
+      setStatusMessage("This lesson does not have a downloadable file.");
+      return;
+    }
+
+    const documentRef = globalThis as unknown as {
+      document?: {
+        createElement?: (tagName: "a") => { href: string; download: string; target: string; click: () => void; remove: () => void };
+        body?: { appendChild: (node: unknown) => void };
+      };
+    };
+    const anchor = documentRef.document?.createElement?.("a");
+    if (anchor && documentRef.document?.body) {
+      anchor.href = fullUrl;
+      anchor.download = lesson.fileName ?? lesson.title;
+      anchor.target = "_blank";
+      documentRef.document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      return;
+    }
+
+    openLearningResource(lesson);
+  }
+
+  function markLearningFinished(lesson: ChildLearningLesson) {
+    void updateLearningProgress(lesson, 100);
   }
 
   async function handleChangePassword() {
@@ -499,27 +678,17 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
             <Text style={styles.webBrand}>KidsBank</Text>
           </View>
           <View style={styles.webNavList}>
-            {[
-              { label: "Home", key: "home" as TabKey },
-                { label: "Wallet", key: "wallet" as TabKey },
-              { label: "Goals", key: "savings" as TabKey },
-              { label: "Chores", key: "chores" as TabKey },
-                { label: "Learn & Earn", key: "learn" as TabKey },
-              { label: "Transactions", key: "transactions" as TabKey },
-                { label: "Notifications", key: "notifications" as TabKey },
-              { label: "Profile", key: "settings" as TabKey },
-            ].map((item) => {
+            {webNavItems.map((item) => {
               const active = tab === item.key;
               return (
                 <Pressable key={item.label} style={[styles.webNavItem, active ? styles.webNavItemActive : null]} onPress={() => setTab(item.key)}>
+                  <View style={[styles.webNavIconPill, active ? styles.webNavIconPillActive : null]}>
+                    <Text style={[styles.webNavIcon, active ? styles.webNavIconActive : null]}>{item.icon}</Text>
+                  </View>
                   <Text style={[styles.webNavText, active ? styles.webNavTextActive : null]}>{item.label}</Text>
                 </Pressable>
               );
             })}
-          </View>
-          <View style={styles.webSidebarFooter}>
-            <Text style={styles.webFooterTitle}>Level 4 Explorer</Text>
-            <Text style={styles.webFooterSub}>320 / 500 XP</Text>
           </View>
           <Pressable style={styles.webLogoutBtn} onPress={onLogout}>
             <Text style={styles.webLogoutBtnText}>Log Out</Text>
@@ -854,9 +1023,9 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
               <Text style={styles.mobileLearnHeroTitle}>Keep learning,{`\n`}keep growing!</Text>
               <Text style={styles.mobileLearnHeroLabel}>Your Progress</Text>
               <View style={styles.mobileGoalTrack}>
-                <View style={[styles.mobileGoalTrackFill, { width: "60%" }]} />
+                <View style={[styles.mobileGoalTrackFill, { width: `${learningProgressPercent}%` }]} />
               </View>
-              <Text style={styles.mobileLearnHeroPercent}>60%</Text>
+              <Text style={styles.mobileLearnHeroPercent}>{learningProgressPercent}%</Text>
             </View>
 
             <View style={styles.mobileLearnTabs}>
@@ -870,39 +1039,84 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
               <Text style={styles.cardTitle}>Continue Learning</Text>
               <View style={styles.mobileContinueCard}>
                 <View style={styles.mobileContinueIcon}>
-                  <Text style={styles.mobileContinueIconText}>🔒</Text>
+                  <Text style={styles.mobileContinueIconText}>{learningLessons[0]?.resourceType === "video" ? "V" : learningLessons[0]?.resourceType === "pdf" ? "P" : "R"}</Text>
                 </View>
                 <View style={styles.mobileContinueMain}>
-                  <Text style={styles.mobileGoalTitle}>Why Saving is Important</Text>
-                  <Text style={styles.rowMeta}>Lesson 3 of 5</Text>
-                  <Text style={styles.rowMeta}>Discover why saving money helps you reach your goals.</Text>
+                  <Text style={styles.mobileGoalTitle}>{learningLessons[0]?.title ?? "No lessons yet"}</Text>
+                  <Text style={styles.rowMeta}>{learningLessons[0]?.subtitle ?? "Parent approved lessons will appear here."}</Text>
+                  <Text style={styles.rowMeta} numberOfLines={3}>
+                    {learningLessons[0]?.content ?? "Ask your parent to approve a lesson or video for you."}
+                  </Text>
+                  {learningLessons[0] ? (
+                    <View style={styles.learningActionRow}>
+                      <Pressable style={styles.learningActionBtnPrimary} onPress={() => openLearningResource(learningLessons[0])}>
+                        <Text style={styles.learningActionBtnPrimaryText}>{learningLessons[0].resourceLabel}</Text>
+                      </Pressable>
+                      <View style={styles.learningSecondaryActionStack}>
+                        {learningLessons[0].resourceUrl ? (
+                          <Pressable style={styles.learningActionBtn} onPress={() => downloadLearningResource(learningLessons[0])}>
+                            <Text style={styles.learningActionBtnText}>Download</Text>
+                          </Pressable>
+                        ) : null}
+                        {learningLessons[0].progress < 100 ? (
+                          <Pressable style={styles.learningActionBtn} onPress={() => markLearningFinished(learningLessons[0])}>
+                            <Text style={styles.learningActionBtnText}>Finish</Text>
+                          </Pressable>
+                        ) : null}
+                      </View>
+                    </View>
+                  ) : null}
                   <View style={styles.mobileContinueFooter}>
                     <View style={[styles.mobileGoalTrack, styles.mobileContinueTrack]}>
-                      <View style={[styles.mobileGoalTrackFill, { width: "60%" }]} />
+                      <View style={[styles.mobileGoalTrackFill, { width: `${learningLessons[0]?.progress ?? 0}%` }]} />
                     </View>
-                    <Text style={styles.mobileGoalHint}>60%</Text>
+                    <Text style={styles.mobileGoalHint}>{learningLessons[0]?.progress ?? 0}%</Text>
                   </View>
                 </View>
               </View>
             </View>
 
             <View style={styles.softCard}>
-              <Text style={styles.cardTitle}>All Lessons</Text>
-              {allLessons.slice(0, 5).map((lesson, index) => (
-                <View key={lesson.id} style={[styles.mobileLessonRow, index === allLessons.slice(0, 5).length - 1 ? styles.mobileRecentRowLast : null]}>
+              <Text style={styles.cardTitle}>Parent Approved Lessons</Text>
+              {learningLessons.slice(0, 5).map((lesson, index) => (
+                <View key={lesson.id} style={[styles.mobileLessonRow, index === learningLessons.slice(0, 5).length - 1 ? styles.mobileRecentRowLast : null]}>
                   <View style={styles.mobileLessonIconWrap}>
-                    <Text style={styles.mobileLessonIcon}>{index % 2 === 0 ? "🐷" : "🎯"}</Text>
+                    <Text style={styles.mobileLessonIcon}>{lesson.resourceType === "video" ? "V" : lesson.resourceType === "pdf" ? "P" : "R"}</Text>
                   </View>
                   <View style={styles.mobileContinueMain}>
                     <Text style={styles.rowMain}>{lesson.title}</Text>
                     <Text style={styles.rowMeta}>{lesson.subtitle}</Text>
-                    <Text style={styles.rowMeta}>{lesson.minutes}</Text>
+                    <Text style={styles.rowMeta} numberOfLines={2}>{lesson.content}</Text>
+                    <View style={styles.learningActionRow}>
+                      <Pressable style={styles.learningActionBtnPrimary} onPress={() => openLearningResource(lesson)}>
+                        <Text style={styles.learningActionBtnPrimaryText}>{lesson.resourceLabel}</Text>
+                      </Pressable>
+                      <View style={styles.learningSecondaryActionStack}>
+                        {lesson.resourceUrl ? (
+                          <Pressable style={styles.learningActionBtn} onPress={() => downloadLearningResource(lesson)}>
+                            <Text style={styles.learningActionBtnText}>Download</Text>
+                          </Pressable>
+                        ) : null}
+                        {lesson.progress < 100 ? (
+                          <Pressable style={styles.learningActionBtn} onPress={() => markLearningFinished(lesson)}>
+                            <Text style={styles.learningActionBtnText}>Finish</Text>
+                          </Pressable>
+                        ) : null}
+                      </View>
+                    </View>
+                    <View style={styles.mobileGoalTrack}>
+                      <View style={[styles.mobileGoalTrackFill, { width: `${lesson.progress}%` }]} />
+                    </View>
+                    <Text style={styles.mobileGoalHint}>{lesson.progress}% complete</Text>
                   </View>
-                  <Text style={lesson.status === "Completed" ? styles.tableCellSuccess : lesson.status === "In Progress" ? styles.tableCellPending : styles.rowMeta}>
-                    {lesson.status}
+                  <Text style={lesson.statusLabel === "Completed" ? styles.tableCellSuccess : styles.tableCellPending}>
+                    {lesson.statusLabel}
                   </Text>
                 </View>
               ))}
+              {learningLessons.length === 0 ? (
+                <Text style={styles.rowMeta}>Lessons and videos approved by your parent will appear here.</Text>
+              ) : null}
             </View>
 
             <View style={styles.mobileTipCard}>
@@ -979,6 +1193,72 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
               </View>
               <View style={styles.webWalletRightCol}>
                 <View style={styles.webCard}>
+                  <View style={styles.webRowBetween}>
+                    <Text style={styles.webCardTitle}>Withdraw Money</Text>
+                    <Pressable style={styles.webMiniBtn} onPress={() => setShowWithdrawForm((prev) => !prev)}>
+                      <Text style={styles.webMiniBtnText}>{showWithdrawForm ? "Close" : "Withdraw"}</Text>
+                    </Pressable>
+                  </View>
+                  {showWithdrawForm ? (
+                    <View style={styles.withdrawForm}>
+                      <Text style={styles.rowMeta}>Where do you want to withdraw from?</Text>
+                      <View style={styles.choiceRow}>
+                        <Pressable
+                          style={[styles.choicePill, withdrawSource === "wallet" ? styles.choicePillActive : null]}
+                          onPress={() => setWithdrawSource("wallet")}
+                        >
+                          <Text style={[styles.choiceText, withdrawSource === "wallet" ? styles.choiceTextActive : null]}>My Account</Text>
+                        </Pressable>
+                        <Pressable
+                          style={[styles.choicePill, withdrawSource === "goal" ? styles.choicePillActive : null]}
+                          onPress={() => {
+                            setWithdrawSource("goal");
+                            if (!withdrawGoalId && withdrawableCompletedGoals[0]) setWithdrawGoalId(withdrawableCompletedGoals[0].id);
+                          }}
+                        >
+                          <Text style={[styles.choiceText, withdrawSource === "goal" ? styles.choiceTextActive : null]}>Completed Goal</Text>
+                        </Pressable>
+                      </View>
+                      {withdrawSource === "goal" ? (
+                        <View style={styles.withdrawGoalList}>
+                          {withdrawableCompletedGoals.map((goal) => (
+                            <Pressable
+                              key={goal.id}
+                              style={[styles.withdrawGoalOption, withdrawGoalId === goal.id ? styles.withdrawGoalOptionActive : null]}
+                              onPress={() => {
+                                setWithdrawGoalId(goal.id);
+                                setWithdrawAmount(String(Math.round(goal.currentAmount)));
+                              }}
+                            >
+                              <Text style={styles.rowMain}>{goal.title}</Text>
+                              <Text style={styles.rowMeta}>{formatMoney(goal.currentAmount)} saved</Text>
+                            </Pressable>
+                          ))}
+                          {withdrawableCompletedGoals.length === 0 ? (
+                            <Text style={styles.rowMeta}>No completed goals have money left to withdraw.</Text>
+                          ) : null}
+                        </View>
+                      ) : null}
+                      <AppInput
+                        label="Amount (UGX)"
+                        value={withdrawAmount}
+                        onChangeText={setWithdrawAmount}
+                        keyboardType="numeric"
+                        placeholder="10000"
+                      />
+                      <AppInput
+                        label="Reason"
+                        value={withdrawDescription}
+                        onChangeText={setWithdrawDescription}
+                        placeholder="Optional"
+                      />
+                      <AppButton title="Submit Withdrawal" loading={isSubmitting} onPress={handleCreateWithdrawal} />
+                    </View>
+                  ) : (
+                    <Text style={styles.rowMeta}>Withdraw from your account, or from a completed savings goal.</Text>
+                  )}
+                </View>
+                <View style={styles.webCard}>
                   <Text style={styles.webCardTitle}>Want to save more?</Text>
                   <Text style={styles.rowMeta}>Create a savings goal and watch your money grow.</Text>
                   <Pressable style={styles.webMiniBtn} onPress={() => setTab("savings")}>
@@ -1013,16 +1293,16 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
               </View>
               <View style={styles.webGoalsKpiRow}>
                 <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Coins Earned</Text><Text style={styles.webKpiValue}>{Math.max(120, completedChores * 20)}</Text></View>
-                <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Level</Text><Text style={styles.webKpiValue}>4</Text></View>
-                <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Lessons Completed</Text><Text style={styles.webKpiValue}>{learningLessons.filter((l) => l.status === "Completed").length}</Text></View>
-                <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Day Streak</Text><Text style={styles.webKpiValue}>7</Text></View>
+                <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Approved Lessons</Text><Text style={styles.webKpiValue}>{learningLessons.length}</Text></View>
+                <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Lessons Completed</Text><Text style={styles.webKpiValue}>{completedLearningCount}</Text></View>
+                <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Progress</Text><Text style={styles.webKpiValue}>{learningProgressPercent}%</Text></View>
               </View>
             </View>
 
             <View style={styles.webWalletBottomGrid}>
               <View style={styles.webCard}>
                 <View style={styles.webRowBetween}>
-                  <Text style={styles.webCardTitle}>My Learning Journey</Text>
+                  <Text style={styles.webCardTitle}>Parent Approved Lessons</Text>
                   <View style={styles.webQuickRow}>
                     <Text style={styles.mobileSectionLink}>All Lessons</Text>
                     <Text style={styles.rowMeta}>In Progress</Text>
@@ -1034,22 +1314,45 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                     <View key={lesson.id} style={styles.webGoalTile}>
                       <Text style={styles.rowMain}>{lesson.title}</Text>
                       <Text style={styles.rowMeta}>{lesson.subtitle}</Text>
-                      <Text style={styles.rowMeta}>{lesson.minutes}</Text>
+                      <Text style={styles.rowMeta} numberOfLines={3}>{lesson.content}</Text>
                       <View style={styles.mobileGoalTrack}>
                         <View style={[styles.mobileGoalTrackFill, { width: `${lesson.progress}%` }]} />
                       </View>
-                      <Text style={lesson.status === "Completed" ? styles.tableCellSuccess : lesson.status === "In Progress" ? styles.tableCellPending : styles.rowMeta}>
-                        {lesson.status}
+                      <Text style={lesson.statusLabel === "Completed" ? styles.tableCellSuccess : styles.tableCellPending}>
+                        {lesson.statusLabel}
                       </Text>
+                      <View style={styles.learningActionRow}>
+                        <Pressable style={styles.learningActionBtnPrimary} onPress={() => openLearningResource(lesson)}>
+                          <Text style={styles.learningActionBtnPrimaryText}>{lesson.resourceLabel}</Text>
+                        </Pressable>
+                        <View style={styles.learningSecondaryActionStack}>
+                          {lesson.resourceUrl ? (
+                            <Pressable style={styles.learningActionBtn} onPress={() => downloadLearningResource(lesson)}>
+                              <Text style={styles.learningActionBtnText}>Download</Text>
+                            </Pressable>
+                          ) : null}
+                          {lesson.progress < 100 ? (
+                            <Pressable style={styles.learningActionBtn} onPress={() => markLearningFinished(lesson)}>
+                              <Text style={styles.learningActionBtnText}>Finish</Text>
+                            </Pressable>
+                          ) : null}
+                        </View>
+                      </View>
                     </View>
                   ))}
+                  {learningLessons.length === 0 ? (
+                    <View style={styles.mobileGoalEmptyCard}>
+                      <Text style={styles.mobileGoalEmptyTitle}>No lessons approved yet</Text>
+                      <Text style={styles.mobileGoalEmptyText}>Lessons, PDFs, and videos your parent approves will appear here for viewing and download.</Text>
+                    </View>
+                  ) : null}
                 </View>
               </View>
 
               <View style={styles.webWalletRightCol}>
                 <View style={styles.webCard}>
                   <Text style={styles.webCardTitle}>Your Progress</Text>
-                  <Text style={styles.webAllowanceValue}>60%</Text>
+                  <Text style={styles.webAllowanceValue}>{learningProgressPercent}%</Text>
                   <Text style={styles.rowMeta}>overall progress</Text>
                 </View>
                 <View style={styles.webCard}>
@@ -1194,14 +1497,18 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                 <Text style={styles.mobileSectionLink}>Add Goal</Text>
               </Pressable>
             </View>
-            {savingsGoals.length === 0 ? (
+            {activeSavingsGoals.length === 0 ? (
               <View style={styles.mobileGoalEmptyCard}>
-                <Text style={styles.mobileGoalEmptyTitle}>No goals yet</Text>
-                <Text style={styles.mobileGoalEmptyText}>Start a new savings goal and track your progress daily.</Text>
+                <Text style={styles.mobileGoalEmptyTitle}>{completedSavingsGoals.length > 0 ? "All caught up!" : "No goals yet"}</Text>
+                <Text style={styles.mobileGoalEmptyText}>
+                  {completedSavingsGoals.length > 0
+                    ? "Your completed goals have moved into achievements."
+                    : "Start a new savings goal and track your progress daily."}
+                </Text>
                 <AppButton title="Create Goal" onPress={() => setTab("actions")} />
               </View>
             ) : null}
-            {savingsGoals.map((goal) => {
+            {activeSavingsGoals.map((goal) => {
               const progress = goal.targetAmount > 0 ? Math.round((goal.currentAmount / goal.targetAmount) * 100) : 0;
               const safeProgress = Math.min(100, Math.max(0, progress));
               return (
@@ -1283,13 +1590,13 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
             </View>
 
             <View style={styles.webWalletBottomGrid}>
-              <View style={styles.webCard}>
+              <View style={[styles.webCard, styles.activeGoalsCard]}>
                 <View style={styles.webRowBetween}>
                   <Text style={styles.webCardTitle}>My Active Goals</Text>
                   <Text style={styles.mobileSectionLink}>View All Goals</Text>
                 </View>
                 <View style={styles.webGoalsGrid}>
-                  {savingsGoals.slice(0, 4).map((goal) => {
+                  {activeSavingsGoals.slice(0, 4).map((goal) => {
                     const progress = goal.targetAmount > 0 ? Math.min(100, Math.round((goal.currentAmount / goal.targetAmount) * 100)) : 0;
                     return (
                       <View key={goal.id} style={styles.webGoalTile}>
@@ -1320,14 +1627,25 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                       </View>
                     );
                   })}
-                  {savingsGoals.length === 0 ? <Text style={styles.infoText}>No active goals yet.</Text> : null}
+                  {activeSavingsGoals.length === 0 ? <Text style={styles.infoText}>No active goals yet. Completed goals are now shown below.</Text> : null}
                 </View>
               </View>
-              <View style={styles.webWalletRightCol}>
+              <View style={styles.savingsArchiveArea}>
+                <View style={styles.savingsInfoStack}>
                 <View style={styles.webCard}>
                   <Text style={styles.webCardTitle}>Savings Streak</Text>
                   <Text style={styles.webAllowanceValue}>7</Text>
                   <Text style={styles.rowMeta}>days in a row</Text>
+                </View>
+                <View style={[styles.webCard, styles.achievementCard]}>
+                  <Text style={styles.webCardTitle}>Goal Achievement</Text>
+                  <Text style={styles.achievementIcon}>{goldenStarCount > 0 ? "★" : "◎"}</Text>
+                  <Text style={styles.rowMain}>
+                    {goldenStarCount > 0 ? `${goldenStarCount} golden star${goldenStarCount === 1 ? "" : "s"} earned` : "Complete a goal to earn a star"}
+                  </Text>
+                  <Text style={styles.rowMeta}>
+                    {goldenStarCount > 0 ? "Each completed goal gives you an automatic golden star." : "Your first golden coin is waiting."}
+                  </Text>
                 </View>
                 <View style={styles.webCard}>
                   <Text style={styles.webCardTitle}>Did You Know?</Text>
@@ -1337,33 +1655,34 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                   <Text style={styles.webCardTitle}>Goal Tip</Text>
                   <Text style={styles.rowMeta}>Break big goals into smaller steps. Small savings, big dreams!</Text>
                 </View>
-              </View>
-            </View>
-
-            <View style={styles.webCard}>
-              <View style={styles.webRowBetween}>
-                <Text style={styles.webCardTitle}>Completed Goals</Text>
-                <Text style={styles.mobileSectionLink}>View Completed</Text>
-              </View>
-              <View style={styles.webGoalsGrid}>
-                {savingsGoals
-                  .filter((goal) => goal.targetAmount > 0 && goal.currentAmount >= goal.targetAmount)
-                  .slice(0, 3)
-                  .map((goal) => (
-                    <View key={goal.id} style={styles.webGoalTile}>
-                      <Text style={styles.rowMain}>{goal.title}</Text>
-                      <Text style={styles.tableCellSuccess}>{formatMoney(goal.currentAmount)}</Text>
-                      <Text style={styles.rowMeta}>Completed</Text>
-                    </View>
-                  ))}
-                <View style={styles.webGoalTileCta}>
-                  <Text style={styles.webCardTitle}>What's your next goal?</Text>
-                  <Pressable style={styles.webMiniBtn} onPress={() => setTab("actions")}>
-                    <Text style={styles.webMiniBtnText}>Create New Goal</Text>
-                  </Pressable>
+                </View>
+                <View style={[styles.webCard, styles.completedGoalsArchiveCard]}>
+                  <View style={styles.webRowBetween}>
+                    <Text style={styles.webCardTitle}>Completed Goals</Text>
+                    <Text style={styles.mobileSectionLink}>Archived</Text>
+                  </View>
+                  <View style={styles.completedGoalsArchiveGrid}>
+                    {completedSavingsGoals.map((goal) => (
+                      <View key={goal.id} style={styles.completedGoalMiniCard}>
+                        <Text style={styles.rowMain}>{goal.title}</Text>
+                        <Text style={styles.tableCellSuccess}>{formatMoney(goal.currentAmount)}</Text>
+                        <Text style={styles.rowMeta}>Golden star earned</Text>
+                      </View>
+                    ))}
+                  </View>
+                  {completedSavingsGoals.length === 0 ? (
+                    <Text style={styles.rowMeta}>Complete a goal to archive it here.</Text>
+                  ) : null}
+                  <View style={styles.webGoalTileCta}>
+                    <Text style={styles.webCardTitle}>What's your next goal?</Text>
+                    <Pressable style={styles.webMiniBtn} onPress={() => setTab("actions")}>
+                      <Text style={styles.webMiniBtnText}>Create New Goal</Text>
+                    </Pressable>
+                  </View>
                 </View>
               </View>
             </View>
+
           </View>
         ) : null}
 
@@ -1712,7 +2031,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                   </View>
                   <View style={styles.webProfileStatCard}><Text style={styles.webKpiValue}>{formatMoney(walletEarned)}</Text><Text style={styles.rowMeta}>Total Earned</Text></View>
                   <View style={styles.webProfileStatCard}><Text style={styles.webKpiValue}>{formatMoney(totalSavings)}</Text><Text style={styles.rowMeta}>Total Saved</Text></View>
-                  <View style={styles.webProfileStatCard}><Text style={styles.webKpiValue}>{learningLessons.filter((l) => l.status === "Completed").length}</Text><Text style={styles.rowMeta}>Lessons Completed</Text></View>
+                  <View style={styles.webProfileStatCard}><Text style={styles.webKpiValue}>{completedLearningCount}</Text><Text style={styles.rowMeta}>Lessons Completed</Text></View>
                   <View style={styles.webProfileStatCard}><Text style={styles.webKpiValue}>{completedGoalsCount}</Text><Text style={styles.rowMeta}>Goals Completed</Text></View>
                 </View>
               </View>
@@ -2557,14 +2876,37 @@ const styles = StyleSheet.create({
   },
   webNavItem: {
     borderRadius: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
     paddingHorizontal: 12,
-    paddingVertical: 12,
+    paddingVertical: 10,
     backgroundColor: "transparent",
   },
   webNavItemActive: {
     backgroundColor: "#5f46f1",
   },
+  webNavIconPill: {
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#202b75",
+  },
+  webNavIconPillActive: {
+    backgroundColor: "#ffffff",
+  },
+  webNavIcon: {
+    color: "#b8c3ff",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  webNavIconActive: {
+    color: "#5f46f1",
+  },
   webNavText: {
+    flex: 1,
     color: "#d7deff",
     fontWeight: "700",
     fontSize: 16,
@@ -2920,6 +3262,26 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: 10,
   },
+  activeGoalsCard: {
+    flex: 1,
+    minWidth: 360,
+  },
+  savingsArchiveArea: {
+    width: 560,
+    flexDirection: "row",
+    alignItems: "stretch",
+    gap: 10,
+  },
+  savingsInfoStack: {
+    width: 210,
+    gap: 10,
+  },
+  completedGoalsArchiveCard: {
+    flex: 1,
+  },
+  completedGoalsArchiveGrid: {
+    gap: 8,
+  },
   webGoalTile: {
     width: 170,
     borderRadius: 12,
@@ -2941,6 +3303,24 @@ const styles = StyleSheet.create({
     gap: 10,
     justifyContent: "center",
     alignItems: "center",
+  },
+  achievementCard: {
+    borderColor: "#f2ce6b",
+    backgroundColor: "#fff8df",
+  },
+  achievementIcon: {
+    color: "#d79a00",
+    fontSize: 34,
+    fontWeight: "900",
+    lineHeight: 38,
+  },
+  completedGoalMiniCard: {
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#edf0f8",
+    backgroundColor: "#ffffff",
+    padding: 9,
+    gap: 2,
   },
   webProfileRow: {
     flexDirection: "row",
@@ -3104,6 +3484,58 @@ const styles = StyleSheet.create({
   },
   rowButtonWrap: {
     marginTop: 6,
+  },
+  withdrawForm: {
+    gap: 10,
+  },
+  withdrawGoalList: {
+    gap: 8,
+  },
+  withdrawGoalOption: {
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: "#ffffff",
+    padding: 10,
+    gap: 2,
+  },
+  withdrawGoalOptionActive: {
+    borderColor: theme.colors.primary,
+    backgroundColor: "#ecebff",
+  },
+  learningActionRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "flex-start",
+    gap: 6,
+    marginTop: 6,
+  },
+  learningSecondaryActionStack: {
+    gap: 6,
+  },
+  learningActionBtnPrimary: {
+    borderRadius: 999,
+    backgroundColor: "#5f46f1",
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  learningActionBtnPrimaryText: {
+    color: "#ffffff",
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  learningActionBtn: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#d9def2",
+    backgroundColor: "#ffffff",
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  learningActionBtnText: {
+    color: "#4f5a7e",
+    fontSize: 11,
+    fontWeight: "800",
   },
   choiceRow: {
     flexDirection: "row",

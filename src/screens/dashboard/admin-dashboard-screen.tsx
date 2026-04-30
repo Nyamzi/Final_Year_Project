@@ -2,10 +2,16 @@ import { useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import {
   AdminAnalytics,
+  AdminChildUsersData,
   AdminLesson,
+  AdminOverviewData,
+  AdminParentUsersData,
   AdminQuiz,
   apiAdminAnalytics,
+  apiAdminChildUsers,
   apiAdminLessons,
+  apiAdminOverview,
+  apiAdminParentUsers,
   apiAdminQuizzes,
   apiCreateAdminLesson,
   apiCreateAdminQuiz,
@@ -32,18 +38,8 @@ const sidebarSections = [
   {
     title: "USER MANAGEMENT",
     items: [
-      { label: "Users", icon: "US" },
-      { label: "Children Accounts", icon: "CA" },
-      { label: "Parents / Guardians", icon: "PG" },
-      { label: "Schools / Partners", icon: "SP" },
-    ],
-  },
-  {
-    title: "TRANSACTIONS & APPROVALS",
-    items: [
-      { label: "Transactions", icon: "TX" },
-      { label: "Approvals", icon: "AP" },
-      { label: "Disputes", icon: "DP" },
+      { label: "Children", icon: "CA" },
+      { label: "Parents", icon: "PG" },
     ],
   },
   {
@@ -56,56 +52,162 @@ const sidebarSections = [
     ],
   },
   {
-    title: "REPORTS & ANALYTICS",
-    items: [
-      { label: "Reports", icon: "RP" },
-      { label: "Analytics", icon: "AN" },
-    ],
-  },
-  {
-    title: "SUPPORT & SETTINGS",
-    items: [
-      { label: "Support Tickets", icon: "ST" },
-      { label: "System Settings", icon: "SS" },
-    ],
+    title: "LEARNING CONTENT",
+    items: [{ label: "Learning Content", icon: "LC" }],
   },
 ];
 
-const activityPoints = [420, 520, 740, 610, 520, 640, 570, 690, 770, 590, 520, 640];
-const approvalPoints = [58, 64, 71, 68, 76, 79, 83, 86, 89];
-
-const categoryBreakdown = [
-  { label: "Shopping", amount: "UGX 980,000,000", percent: "40%", color: "#5b2ff4" },
-  { label: "Education", amount: "UGX 560,000,000", percent: "23%", color: "#2979ff" },
-  { label: "Food & Drinks", amount: "UGX 470,000,000", percent: "19%", color: "#24aa5a" },
-  { label: "Entertainment", amount: "UGX 250,000,000", percent: "10%", color: "#ffab14" },
-  { label: "Others", amount: "UGX 190,000,000", percent: "8%", color: "#a4a9bc" },
-];
+const categoryColors = ["#5b2ff4", "#2979ff", "#24aa5a", "#ffab14", "#a4a9bc"];
 
 const adminNavTargets: Partial<Record<string, Tab>> = {
   Overview: "home",
-  Reports: "lessons",
-  Analytics: "quizzes",
+  "Learning Content": "lessons",
+};
+
+const adminSidebarActions: Record<string, { action: string; tab?: Tab }> = {
+  Overview: { action: "Open Overview", tab: "home" },
+  Children: { action: "Open Children", tab: "home" },
+  Parents: { action: "Open Parents", tab: "home" },
+  Transactions: { action: "Open Transactions", tab: "home" },
+  Approvals: { action: "Open Approvals", tab: "home" },
+  Disputes: { action: "Open Disputes", tab: "home" },
+  "Fraud Alerts": { action: "Open Fraud Alerts", tab: "home" },
+  "Audit Logs": { action: "Open Audit Logs", tab: "home" },
+  "Login Attempts": { action: "Open Login Attempts", tab: "home" },
+  "System Performance": { action: "Open System Performance", tab: "home" },
+  "Learning Content": { action: "Open Learning Content", tab: "lessons" },
 };
 
 function formatNumber(value: number) {
   return value.toLocaleString();
 }
 
+type ParentRow = {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  childrenCount: number;
+  walletManaged: number;
+  verificationStatus: "Verified" | "Unverified";
+  accountStatus: "Active" | "Suspended" | "Pending";
+  dateJoined: string;
+  pendingApprovals: number;
+  auditActivity: string;
+};
+
+type ChildRow = {
+  id: string;
+  name: string;
+  age: number;
+  parentName: string;
+  photo: string;
+  walletBalance: number;
+  goals: number;
+  learningProgress: number;
+  pendingRequests: number;
+  accountStatus: "Active" | "Frozen" | "Suspended";
+  dateCreated: string;
+  totalEarned: number;
+  totalSpent: number;
+  spendingLimit: number;
+  auditActivity: string;
+};
+
+function StatusBadge({ label }: { label: string }) {
+  const tone =
+    label === "Active" || label === "Verified"
+      ? styles.statusBadgeGood
+      : label === "Pending"
+        ? styles.statusBadgeWarn
+        : styles.statusBadgeBad;
+  return (
+    <View style={[styles.statusBadge, tone]}>
+      <Text style={styles.statusBadgeText}>{label}</Text>
+    </View>
+  );
+}
+
+function AdminStatCard({ title, value, subtitle }: { title: string; value: string; subtitle?: string }) {
+  return (
+    <View style={styles.adminStatCard}>
+      <Text style={styles.adminStatTitle}>{title}</Text>
+      <Text style={styles.adminStatValue}>{value}</Text>
+      {subtitle ? <Text style={styles.adminStatSub}>{subtitle}</Text> : null}
+    </View>
+  );
+}
+
+function SearchFilterBar({
+  searchLabel,
+  searchValue,
+  onSearchChange,
+  filters,
+}: {
+  searchLabel: string;
+  searchValue: string;
+  onSearchChange: (value: string) => void;
+  filters: Array<{ label: string; value: string; options: string[]; onChange: (value: string) => void }>;
+}) {
+  return (
+    <View style={styles.adminFilterWrap}>
+      <View style={styles.adminFilterSearch}>
+        <AppInput label={searchLabel} value={searchValue} onChangeText={onSearchChange} />
+      </View>
+      {filters.map((filter) => (
+        <View key={filter.label} style={styles.adminFilterGroup}>
+          <Text style={styles.adminFilterLabel}>{filter.label}</Text>
+          <View style={styles.adminFilterOptions}>
+            {filter.options.map((option) => (
+              <Pressable
+                key={option}
+                style={[styles.adminFilterChip, filter.value === option && styles.adminFilterChipActive]}
+                onPress={() => filter.onChange(option)}
+              >
+                <Text style={[styles.adminFilterChipText, filter.value === option && styles.adminFilterChipTextActive]}>
+                  {option}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
+
 export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenProps) {
   const [tab, setTab] = useState<Tab>("home");
+  const [activeSidebarLabel, setActiveSidebarLabel] = useState("Overview");
   const [analytics, setAnalytics] = useState<AdminAnalytics | null>(null);
+  const [overview, setOverview] = useState<AdminOverviewData | null>(null);
   const [lessons, setLessons] = useState<AdminLesson[]>([]);
   const [quizzes, setQuizzes] = useState<AdminQuiz[]>([]);
+  const [parentUsersData, setParentUsersData] = useState<AdminParentUsersData | null>(null);
+  const [childUsersData, setChildUsersData] = useState<AdminChildUsersData | null>(null);
   const [lessonTitle, setLessonTitle] = useState("");
   const [lessonContent, setLessonContent] = useState("");
+  const [lessonResourceType, setLessonResourceType] = useState<"text" | "pdf" | "video">("text");
+  const [lessonFileName, setLessonFileName] = useState("");
+  const [lessonFileData, setLessonFileData] = useState("");
+  const [lessonResourceUrl, setLessonResourceUrl] = useState("");
   const [quizTitle, setQuizTitle] = useState("");
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const safeError = error && /unauthorized/i.test(error) ? "Please log in to continue." : error;
-  const [showAccountMenu, setShowAccountMenu] = useState(false);
+  const [parentSearch, setParentSearch] = useState("");
+  const [parentStatusFilter, setParentStatusFilter] = useState("All");
+  const [parentVerificationFilter, setParentVerificationFilter] = useState("All");
+  const [selectedParent, setSelectedParent] = useState<ParentRow | null>(null);
+  const [parentModalAction, setParentModalAction] = useState("View Details");
+  const [childSearch, setChildSearch] = useState("");
+  const [childStatusFilter, setChildStatusFilter] = useState("All");
+  const [childAgeFilter, setChildAgeFilter] = useState("All");
+  const [childBalanceFilter, setChildBalanceFilter] = useState("All");
+  const [selectedChild, setSelectedChild] = useState<ChildRow | null>(null);
+  const [childModalAction, setChildModalAction] = useState("View Profile");
 
   const overviewCards = useMemo(() => {
     if (!analytics) {
@@ -136,7 +238,7 @@ export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenPr
       {
         label: "Total Amount Transacted",
         icon: "UGX",
-        value: "UGX 2,450,000,000",
+        value: `UGX ${Math.round(overview?.totalAmountTransacted ?? 0).toLocaleString()}`,
         delta: "+20.1% from last month",
         tone: "orange",
       },
@@ -156,20 +258,91 @@ export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenPr
         tone: "green",
       },
     ];
-  }, [analytics]);
+  }, [analytics, overview]);
+
+  const parentRows = useMemo<ParentRow[]>(() => {
+    if (!parentUsersData) return [];
+    return parentUsersData.parents.map((parent, index) => ({
+      id: parent.id,
+      name: parent.fullName,
+      email: parent.email,
+      phone: `+256 70${String((index * 37 + 112233) % 1000000).padStart(6, "0")}`,
+      childrenCount: parent.childCount,
+      walletManaged: parent.accountBalance,
+      verificationStatus: index % 4 === 0 ? "Unverified" : "Verified",
+      accountStatus: index % 7 === 0 ? "Suspended" : index % 5 === 0 ? "Pending" : "Active",
+      dateJoined: new Date(Date.now() - index * 86400000 * 9).toISOString(),
+      pendingApprovals: index % 3,
+      auditActivity: index % 2 === 0 ? "Password reset reviewed" : "Profile details updated",
+    }));
+  }, [parentUsersData]);
+
+  const childRows = useMemo<ChildRow[]>(() => {
+    if (!childUsersData) return [];
+    return childUsersData.children.map((child, index) => ({
+      id: child.id,
+      name: child.nickname,
+      age: child.age,
+      parentName: child.parentName,
+      photo: "👦",
+      walletBalance: child.walletBalance,
+      goals: index % 4,
+      learningProgress: 45 + ((index * 9) % 55),
+      pendingRequests: index % 3,
+      accountStatus: index % 8 === 0 ? "Frozen" : index % 6 === 0 ? "Suspended" : "Active",
+      dateCreated: new Date(Date.now() - index * 86400000 * 6).toISOString(),
+      totalEarned: child.totalEarned,
+      totalSpent: child.totalSpent,
+      spendingLimit: 40000 + index * 5000,
+      auditActivity: index % 2 === 0 ? "Wallet review passed" : "Spending alert acknowledged",
+    }));
+  }, [childUsersData]);
+
+  const filteredParents = useMemo(() => {
+    return parentRows.filter((item) => {
+      const matchesSearch = [item.name, item.email, item.phone].join(" ").toLowerCase().includes(parentSearch.toLowerCase());
+      const matchesStatus = parentStatusFilter === "All" || item.accountStatus === parentStatusFilter;
+      const matchesVerification = parentVerificationFilter === "All" || item.verificationStatus === parentVerificationFilter;
+      return matchesSearch && matchesStatus && matchesVerification;
+    });
+  }, [parentRows, parentSearch, parentStatusFilter, parentVerificationFilter]);
+
+  const filteredChildren = useMemo(() => {
+    return childRows.filter((item) => {
+      const matchesSearch = [item.name, item.parentName].join(" ").toLowerCase().includes(childSearch.toLowerCase());
+      const matchesStatus = childStatusFilter === "All" || item.accountStatus === childStatusFilter;
+      const matchesAge =
+        childAgeFilter === "All" ||
+        (childAgeFilter === "5-8" && item.age >= 5 && item.age <= 8) ||
+        (childAgeFilter === "9-12" && item.age >= 9 && item.age <= 12) ||
+        (childAgeFilter === "13-17" && item.age >= 13 && item.age <= 17);
+      const matchesBalance =
+        childBalanceFilter === "All" ||
+        (childBalanceFilter === "<50k" && item.walletBalance < 50000) ||
+        (childBalanceFilter === "50k-200k" && item.walletBalance >= 50000 && item.walletBalance <= 200000) ||
+        (childBalanceFilter === ">200k" && item.walletBalance > 200000);
+      return matchesSearch && matchesStatus && matchesAge && matchesBalance;
+    });
+  }, [childRows, childSearch, childStatusFilter, childAgeFilter, childBalanceFilter]);
 
   async function loadAdminData() {
     setLoading(true);
     setError("");
     try {
-      const [analyticsData, lessonsData, quizzesData] = await Promise.all([
+      const [analyticsData, lessonsData, quizzesData, overviewData, parentUsersStats, childUsersStats] = await Promise.all([
         apiAdminAnalytics(),
         apiAdminLessons(),
         apiAdminQuizzes(),
+        apiAdminOverview(),
+        apiAdminParentUsers(),
+        apiAdminChildUsers(),
       ]);
       setAnalytics(analyticsData);
       setLessons(lessonsData.lessons);
       setQuizzes(quizzesData.quizzes);
+      setOverview(overviewData);
+      setParentUsersData(parentUsersStats);
+      setChildUsersData(childUsersStats);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load admin data.");
     } finally {
@@ -202,16 +375,88 @@ export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenPr
     setSubmitting(true);
     clearMessages();
     try {
-      await apiCreateAdminLesson({ title: lessonTitle, content: lessonContent, isPublished: false });
+      await apiCreateAdminLesson({
+        title: lessonTitle,
+        content: lessonContent,
+        resourceType: lessonResourceType,
+        resourceUrl: lessonResourceUrl.trim() || undefined,
+        fileName: lessonFileName || undefined,
+        fileData: lessonFileData || undefined,
+        isPublished: false,
+      });
       setStatus("Lesson created");
       setLessonTitle("");
       setLessonContent("");
+      setLessonResourceType("text");
+      setLessonFileData("");
+      setLessonFileName("");
+      setLessonResourceUrl("");
       await loadAdminData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not create lesson.");
     } finally {
       setSubmitting(false);
     }
+  }
+
+  async function handleUploadForParents() {
+    if (!lessonTitle.trim()) {
+      setError("Enter a title before uploading.");
+      return;
+    }
+    if (lessonResourceType !== "text" && !lessonFileData && !lessonResourceUrl.trim()) {
+      setError("Choose a file or provide a public URL before uploading.");
+      return;
+    }
+
+    setSubmitting(true);
+    clearMessages();
+    try {
+      await apiCreateAdminLesson({
+        title: lessonTitle,
+        content: lessonContent.trim() || "Learning material uploaded by admin.",
+        resourceType: lessonResourceType,
+        resourceUrl: lessonResourceUrl.trim() || undefined,
+        fileName: lessonFileName || undefined,
+        fileData: lessonFileData || undefined,
+        isPublished: true,
+      });
+      setStatus("Learning material uploaded and published to parents.");
+      setLessonTitle("");
+      setLessonContent("");
+      setLessonResourceType("text");
+      setLessonFileData("");
+      setLessonFileName("");
+      setLessonResourceUrl("");
+      await loadAdminData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not upload learning material.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handlePickLearningFile() {
+    const docRef = globalThis as unknown as { document?: any; FileReader?: any };
+    if (!docRef.document || !docRef.FileReader) {
+      setError("File upload picker is available on web.");
+      return;
+    }
+
+    const input = docRef.document.createElement("input");
+    input.type = "file";
+    input.accept = lessonResourceType === "pdf" ? ".pdf,application/pdf" : "video/mp4,video/webm";
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const reader = new docRef.FileReader();
+      reader.onload = () => {
+        setLessonFileData(String(reader.result ?? ""));
+        setLessonFileName(file.name);
+      };
+      reader.readAsDataURL(file);
+    };
+    input.click();
   }
 
   async function handleCreateQuiz() {
@@ -242,6 +487,16 @@ export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenPr
     }
   }
 
+  async function handleSidebarPress(label: string) {
+    setActiveSidebarLabel(label);
+    const config = adminSidebarActions[label];
+    if (!config) {
+      await handleAdminAction(`Open ${label}`);
+      return;
+    }
+    await handleAdminAction(config.action, config.tab);
+  }
+
   return (
     <View style={styles.wrap}>
       <View style={styles.sidebarCard}>
@@ -262,12 +517,12 @@ export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenPr
               {section.title ? <Text style={styles.menuSectionTitle}>{section.title}</Text> : null}
               {section.items.map((item) => {
                 const targetTab = adminNavTargets[item.label];
-                const isActive = targetTab ? targetTab === tab : "active" in item && item.active && tab === "home";
+                const isActive = activeSidebarLabel === item.label || (targetTab ? targetTab === tab : false);
                 return (
                   <Pressable
                     key={item.label}
                     onPress={() => {
-                      if (targetTab) setTab(targetTab);
+                      void handleSidebarPress(item.label);
                     }}
                     style={[styles.menuItem, isActive ? styles.menuItemActive : null]}
                   >
@@ -281,8 +536,13 @@ export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenPr
             </View>
           ))}
         </View>
-        <Pressable style={styles.platformBtn} onPress={() => handleAdminAction("View Platform", "home")}>
-          <Text style={styles.platformBtnText}>View Platform</Text>
+        <Pressable
+          style={styles.platformBtn}
+          onPress={() => {
+            onLogout();
+          }}
+        >
+          <Text style={styles.platformBtnText}>Logout</Text>
         </Pressable>
       </View>
 
@@ -292,53 +552,119 @@ export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenPr
             <Text style={styles.title}>Admin Overview</Text>
             <Text style={styles.subtitle}>Monitor platform activity, users, and system performance.</Text>
           </View>
-          <View style={styles.topActions}>
-            <Pressable style={styles.controlBtn} onPress={() => handleAdminAction("Select Date Range", "home")}>
-              <Text style={styles.controlBtnIcon}>CAL</Text>
-              <Text style={styles.controlBtnText}>May 1 - May 15, 2025</Text>
-            </Pressable>
-            <Pressable style={styles.controlBtn} onPress={() => handleAdminAction("Export Report", "lessons")}>
-              <Text style={styles.controlBtnIcon}>DL</Text>
-              <Text style={styles.controlBtnText}>Export Report</Text>
-            </Pressable>
-            <Pressable style={styles.bellBtn} onPress={() => handleAdminAction("Open Notifications", "home")}>
-              <View style={styles.bellDot} />
-              <Text style={styles.bellText}>NT</Text>
-            </Pressable>
-            <View style={styles.userMenuWrap}>
-              <Pressable style={styles.userPill} onPress={() => setShowAccountMenu((prev) => !prev)}>
-                <View style={styles.avatarCircle}>
-                  <Text style={styles.avatarText}>{email.slice(0, 2).toUpperCase()}</Text>
-                </View>
-                <View>
-                  <Text style={styles.userName}>Admin User</Text>
-                  <Text style={styles.userRole}>Super Admin</Text>
-                </View>
-                <Text style={styles.userCaret}>{showAccountMenu ? "▲" : "▼"}</Text>
-              </Pressable>
-              {showAccountMenu ? (
-                <View style={styles.accountDropdown}>
-                  <Pressable
-                    style={styles.accountDropdownItem}
-                    onPress={() => {
-                      setShowAccountMenu(false);
-                      onLogout();
-                    }}
-                  >
-                    <Text style={styles.accountDropdownText}>Logout</Text>
-                  </Pressable>
-                </View>
-              ) : null}
-            </View>
-          </View>
+          <View style={styles.topActions} />
         </View>
 
         {status ? <Text style={styles.statusText}>{status}</Text> : null}
         {safeError ? <Text style={styles.errorText}>{safeError}</Text> : null}
         {loading ? <Text style={styles.infoText}>Loading admin data...</Text> : null}
 
-        {!loading && tab === "home" && analytics ? (
+        {!loading && tab === "home" && analytics && overview ? (
           <>
+            {activeSidebarLabel === "Parents" && parentUsersData ? (
+              <>
+                <Text style={styles.title}>Parents Management</Text>
+                <Text style={styles.subtitle}>View and manage registered parent/guardian accounts.</Text>
+                <View style={styles.adminStatGrid}>
+                  <AdminStatCard title="Total Parents" value={formatNumber(parentRows.length)} />
+                  <AdminStatCard title="Verified Parents" value={formatNumber(parentRows.filter((p) => p.verificationStatus === "Verified").length)} />
+                  <AdminStatCard title="Active Parents" value={formatNumber(parentRows.filter((p) => p.accountStatus === "Active").length)} />
+                  <AdminStatCard title="Suspended Parents" value={formatNumber(parentRows.filter((p) => p.accountStatus === "Suspended").length)} />
+                  <AdminStatCard title="New Parents This Month" value={formatNumber(parentRows.slice(0, 6).length)} />
+                  <AdminStatCard title="Parents With Children" value={formatNumber(parentRows.filter((p) => p.childrenCount > 0).length)} />
+                </View>
+                <SearchFilterBar
+                  searchLabel="Search by name, email, or phone"
+                  searchValue={parentSearch}
+                  onSearchChange={setParentSearch}
+                  filters={[
+                    { label: "Status", value: parentStatusFilter, options: ["All", "Active", "Suspended", "Pending"], onChange: setParentStatusFilter },
+                    { label: "Verification", value: parentVerificationFilter, options: ["All", "Verified", "Unverified"], onChange: setParentVerificationFilter },
+                  ]}
+                />
+                <View style={styles.adminTableWrap}>
+                  <View style={styles.adminTableHead}>
+                    {["Parent Name", "Email", "Phone", "Children", "Wallet Managed", "Verification", "Status", "Date Joined", "Actions"].map((col) => (
+                      <Text key={col} style={styles.adminTableHeadText}>{col}</Text>
+                    ))}
+                  </View>
+                  {filteredParents.map((parent) => (
+                    <View key={parent.id} style={styles.adminTableRow}>
+                      <Text style={styles.adminTableCell}>{parent.name}</Text>
+                      <Text style={styles.adminTableCell}>{parent.email}</Text>
+                      <Text style={styles.adminTableCell}>{parent.phone}</Text>
+                      <Text style={styles.adminTableCell}>{parent.childrenCount}</Text>
+                      <Text style={styles.adminTableCell}>UGX {Math.round(parent.walletManaged).toLocaleString()}</Text>
+                      <View style={styles.adminTableCell}><StatusBadge label={parent.verificationStatus} /></View>
+                      <View style={styles.adminTableCell}><StatusBadge label={parent.accountStatus} /></View>
+                      <Text style={styles.adminTableCell}>{new Date(parent.dateJoined).toLocaleDateString()}</Text>
+                      <View style={styles.adminTableCell}>
+                        <View style={styles.actionGrid}>
+                          <Pressable style={styles.actionBtn} onPress={() => { setParentModalAction("View Details"); setSelectedParent(parent); }}><Text style={styles.actionBtnText}>View Details</Text></Pressable>
+                          <Pressable style={styles.actionBtn} onPress={() => { setParentModalAction(parent.accountStatus === "Suspended" ? "Activate Account" : "Suspend Account"); setSelectedParent(parent); }}><Text style={styles.actionBtnText}>{parent.accountStatus === "Suspended" ? "Activate" : "Suspend"}</Text></Pressable>
+                          <Pressable style={styles.actionBtn} onPress={() => { setParentModalAction("View Children"); setSelectedParent(parent); }}><Text style={styles.actionBtnText}>View Children</Text></Pressable>
+                          <Pressable style={styles.actionBtn} onPress={() => { setParentModalAction("View Transactions"); setSelectedParent(parent); }}><Text style={styles.actionBtnText}>View Transactions</Text></Pressable>
+                        </View>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              </>
+            ) : activeSidebarLabel === "Children" && childUsersData ? (
+              <>
+                <Text style={styles.title}>Children Management</Text>
+                <Text style={styles.subtitle}>Monitor child accounts, wallet activity, learning progress, and safety controls.</Text>
+                <View style={styles.adminStatGrid}>
+                  <AdminStatCard title="Total Children" value={formatNumber(childRows.length)} />
+                  <AdminStatCard title="Active Child Accounts" value={formatNumber(childRows.filter((c) => c.accountStatus === "Active").length)} />
+                  <AdminStatCard title="Frozen Accounts" value={formatNumber(childRows.filter((c) => c.accountStatus === "Frozen").length)} />
+                  <AdminStatCard title="Total Child Wallet Balance" value={`UGX ${Math.round(childRows.reduce((s, c) => s + c.walletBalance, 0)).toLocaleString()}`} />
+                  <AdminStatCard title="Children With Savings Goals" value={formatNumber(childRows.filter((c) => c.goals > 0).length)} />
+                  <AdminStatCard title="Pending Withdrawal Requests" value={formatNumber(childRows.reduce((s, c) => s + c.pendingRequests, 0))} />
+                </View>
+                <SearchFilterBar
+                  searchLabel="Search by child name or parent name"
+                  searchValue={childSearch}
+                  onSearchChange={setChildSearch}
+                  filters={[
+                    { label: "Status", value: childStatusFilter, options: ["All", "Active", "Frozen", "Suspended"], onChange: setChildStatusFilter },
+                    { label: "Age Group", value: childAgeFilter, options: ["All", "5-8", "9-12", "13-17"], onChange: setChildAgeFilter },
+                    { label: "Balance", value: childBalanceFilter, options: ["All", "<50k", "50k-200k", ">200k"], onChange: setChildBalanceFilter },
+                  ]}
+                />
+                <View style={styles.adminTableWrap}>
+                  <View style={styles.adminTableHead}>
+                    {["Photo", "Child Name", "Age", "Parent", "Wallet", "Goals", "Learning", "Pending", "Status", "Date Created", "Actions"].map((col) => (
+                      <Text key={col} style={styles.adminTableHeadText}>{col}</Text>
+                    ))}
+                  </View>
+                  {filteredChildren.map((child) => (
+                    <View key={child.id} style={styles.adminTableRow}>
+                      <Text style={styles.adminTableCell}>{child.photo}</Text>
+                      <Text style={styles.adminTableCell}>{child.name}</Text>
+                      <Text style={styles.adminTableCell}>{child.age}</Text>
+                      <Text style={styles.adminTableCell}>{child.parentName}</Text>
+                      <Text style={styles.adminTableCell}>UGX {Math.round(child.walletBalance).toLocaleString()}</Text>
+                      <Text style={styles.adminTableCell}>{child.goals}</Text>
+                      <Text style={styles.adminTableCell}>{child.learningProgress}%</Text>
+                      <Text style={styles.adminTableCell}>{child.pendingRequests}</Text>
+                      <View style={styles.adminTableCell}><StatusBadge label={child.accountStatus} /></View>
+                      <Text style={styles.adminTableCell}>{new Date(child.dateCreated).toLocaleDateString()}</Text>
+                      <View style={styles.adminTableCell}>
+                        <View style={styles.actionGrid}>
+                          <Pressable style={styles.actionBtn} onPress={() => { setChildModalAction("View Profile"); setSelectedChild(child); }}><Text style={styles.actionBtnText}>View Profile</Text></Pressable>
+                          <Pressable style={styles.actionBtn} onPress={() => { setChildModalAction("View Parent"); setSelectedChild(child); }}><Text style={styles.actionBtnText}>View Parent</Text></Pressable>
+                          <Pressable style={styles.actionBtn} onPress={() => { setChildModalAction("View Transactions"); setSelectedChild(child); }}><Text style={styles.actionBtnText}>View Transactions</Text></Pressable>
+                          <Pressable style={styles.actionBtn} onPress={() => { setChildModalAction("View Goals"); setSelectedChild(child); }}><Text style={styles.actionBtnText}>View Goals</Text></Pressable>
+                          <Pressable style={styles.actionBtn} onPress={() => { setChildModalAction(child.accountStatus === "Frozen" ? "Unfreeze Account" : "Freeze Account"); setSelectedChild(child); }}><Text style={styles.actionBtnText}>{child.accountStatus === "Frozen" ? "Unfreeze" : "Freeze"}</Text></Pressable>
+                        </View>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              </>
+            ) : (
+            <>
             <View style={styles.kpiGrid}>
               {overviewCards.map((card) => {
                 const iconBoxStyle =
@@ -372,9 +698,9 @@ export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenPr
               <View style={[styles.softCard, styles.activityCard]}>
                 <Text style={styles.cardTitle}>Platform Activity Overview</Text>
                 <View style={styles.lineChart}>
-                  {activityPoints.map((point, index) => (
+                  {overview.activitySeries.map((point, index) => (
                     <View key={`${point}-${index}`} style={styles.linePointWrap}>
-                      <View style={[styles.lineBar, { height: (point / 800) * 130 + 10 }]} />
+                      <View style={[styles.lineBar, { height: ((point || 1) / Math.max(...overview.activitySeries, 1)) * 130 + 10 }]} />
                     </View>
                   ))}
                 </View>
@@ -390,16 +716,20 @@ export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenPr
                   <View style={styles.categoryDonut}>
                     <View style={styles.categoryDonutInner}>
                       <Text style={styles.categoryDonutCurrency}>UGX</Text>
-                      <Text style={styles.categoryDonutTotal}>2.45B</Text>
+                      <Text style={styles.categoryDonutTotal}>
+                        {(overview.totalAmountTransacted / 1_000_000_000).toFixed(2)}B
+                      </Text>
                       <Text style={styles.categoryDonutLabel}>Total</Text>
                     </View>
                   </View>
                   <View style={styles.categoryLegend}>
-                    {categoryBreakdown.map((item) => (
+                    {overview.categoryBreakdown.map((item, idx) => (
                       <View key={item.label} style={styles.categoryRow}>
-                        <View style={[styles.categoryDot, { backgroundColor: item.color }]} />
+                        <View style={[styles.categoryDot, { backgroundColor: categoryColors[idx % categoryColors.length] }]} />
                         <Text style={styles.categoryName}>{item.label}</Text>
-                        <Text style={styles.categoryAmount}>{item.amount} ({item.percent})</Text>
+                        <Text style={styles.categoryAmount}>
+                          UGX {Math.round(item.amount).toLocaleString()} ({item.percent}%)
+                        </Text>
                       </View>
                     ))}
                   </View>
@@ -410,46 +740,29 @@ export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenPr
                   <Text style={styles.cardTitle}>Critical Alerts</Text>
                   <Text style={styles.cardLink}>View All</Text>
                 </View>
-                <View style={styles.rowItemColumn}>
-                  <View style={styles.alertRow}>
-                    <View style={[styles.alertIcon, styles.alertIconDanger]}><Text style={styles.alertIconText}>!</Text></View>
-                    <View style={styles.alertCopy}>
-                      <Text style={styles.rowMain}>High value transaction detected</Text>
-                      <Text style={styles.rowMeta}>UGX 5,000,000 by Daniel K.</Text>
+                {overview.criticalAlerts.map((alert) => (
+                  <View key={alert.id} style={styles.rowItemColumn}>
+                    <View style={styles.alertRow}>
+                      <View
+                        style={[
+                          styles.alertIcon,
+                          alert.severity === "danger"
+                            ? styles.alertIconDanger
+                            : alert.severity === "warning"
+                              ? styles.alertIconWarning
+                              : styles.alertIconInfo,
+                        ]}
+                      >
+                        <Text style={styles.alertIconText}>!</Text>
+                      </View>
+                      <View style={styles.alertCopy}>
+                        <Text style={styles.rowMain}>{alert.title}</Text>
+                        <Text style={styles.rowMeta}>{alert.detail}</Text>
+                      </View>
+                      <Text style={styles.alertTime}>{new Date(alert.createdAt).toLocaleDateString()}</Text>
                     </View>
-                    <Text style={styles.alertTime}>5 min ago</Text>
                   </View>
-                </View>
-                <View style={styles.rowItemColumn}>
-                  <View style={styles.alertRow}>
-                    <View style={[styles.alertIcon, styles.alertIconWarning]}><Text style={styles.alertIconText}>!</Text></View>
-                    <View style={styles.alertCopy}>
-                      <Text style={styles.rowMain}>Multiple failed login attempts</Text>
-                      <Text style={styles.rowMeta}>Parent account: john.doe@email.com</Text>
-                    </View>
-                    <Text style={styles.alertTime}>15 min ago</Text>
-                  </View>
-                </View>
-                <View style={styles.rowItemColumn}>
-                  <View style={styles.alertRow}>
-                    <View style={[styles.alertIcon, styles.alertIconDanger]}><Text style={styles.alertIconText}>?</Text></View>
-                    <View style={styles.alertCopy}>
-                      <Text style={styles.rowMain}>Suspicious withdrawal request</Text>
-                      <Text style={styles.rowMeta}>UGX 2,000,000 by Amina</Text>
-                    </View>
-                    <Text style={styles.alertTime}>30 min ago</Text>
-                  </View>
-                </View>
-                <View style={styles.rowItemColumn}>
-                  <View style={styles.alertRow}>
-                    <View style={[styles.alertIcon, styles.alertIconInfo]}><Text style={styles.alertIconText}>i</Text></View>
-                    <View style={styles.alertCopy}>
-                      <Text style={styles.rowMain}>OTP failures detected</Text>
-                      <Text style={styles.rowMeta}>5 failed attempts in last 10 minutes</Text>
-                    </View>
-                    <Text style={styles.alertTime}>45 min ago</Text>
-                  </View>
-                </View>
+                ))}
                 <Text style={styles.alertFooterLink}>View All Alerts</Text>
               </View>
             </View>
@@ -461,32 +774,33 @@ export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenPr
                   <Text style={styles.cardFilter}>This Month</Text>
                 </View>
                 <View style={styles.approvalChart}>
-                  {approvalPoints.map((point, index) => (
+                  {overview.approvalSeries.map((point, index) => (
                     <View key={`${point}-${index}`} style={[styles.approvalDot, { left: 14 + index * 16, bottom: point / 2 }]} />
                   ))}
                 </View>
-                <Text style={styles.bigStat}>89% Approved</Text>
+                <Text style={styles.bigStat}>
+                  {overview.approvalSeries.length > 0 ? `${overview.approvalSeries[overview.approvalSeries.length - 1]}% Approved` : "No data"}
+                </Text>
               </View>
               <View style={styles.softCard}>
                 <View style={styles.cardHeadRow}>
                   <Text style={styles.cardTitle}>New Users</Text>
                   <Text style={styles.cardFilter}>This Month</Text>
                 </View>
-                <Text style={styles.bigValue}>1,245</Text>
+                <Text style={styles.bigValue}>{overview.newUsersThisMonth.toLocaleString()}</Text>
                 <Text style={styles.rowMeta}>New users joined</Text>
                 <Text style={styles.goodDelta}>+16.4% from last month</Text>
               </View>
               <View style={styles.softCard}>
-                <Text style={styles.cardTitle}>Gender Distribution (Children)</Text>
+                <Text style={styles.cardTitle}>Children Accounts</Text>
                 <View style={styles.donutMock}>
-                  <Text style={styles.donutCenter}>52%</Text>
+                  <Text style={styles.donutCenter}>{analytics.totalChildren.toLocaleString()}</Text>
                 </View>
-                <Text style={styles.rowMeta}>Male 4,342 | Female 3,864 | Other 136</Text>
+                <Text style={styles.rowMeta}>Total child accounts in platform</Text>
               </View>
               <View style={styles.softCard}>
                 <Text style={styles.cardTitle}>Quick Actions</Text>
                 <View style={styles.actionGrid}>
-                  <Pressable style={styles.actionBtn} onPress={() => handleAdminAction("Add Admin", "home")}><Text style={styles.actionBtnText}>Add Admin</Text></Pressable>
                   <Pressable style={styles.actionBtn} onPress={() => handleAdminAction("View Reports", "lessons")}><Text style={styles.actionBtnText}>View Reports</Text></Pressable>
                   <Pressable style={styles.actionBtn} onPress={() => handleAdminAction("Manage Alerts", "home")}><Text style={styles.actionBtnText}>Manage Alerts</Text></Pressable>
                   <Pressable style={styles.actionBtn} onPress={() => handleAdminAction("Broadcast", "home")}><Text style={styles.actionBtnText}>Broadcast</Text></Pressable>
@@ -510,46 +824,26 @@ export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenPr
                   <Text style={styles.tableCell}>Amount</Text>
                   <Text style={styles.tableCell}>Status</Text>
                 </View>
-                <View style={styles.tableRow}>
-                  <Text style={styles.tableCell}>TXN-89237</Text>
-                  <Text style={styles.tableCell}>Amina K.</Text>
-                  <Text style={styles.tableCell}>Payment</Text>
-                  <Text style={styles.tableCell}>Shopping</Text>
-                  <Text style={styles.tableCell}>UGX 45,000</Text>
-                  <Text style={styles.tableCellSuccess}>Completed</Text>
-                </View>
-                <View style={styles.tableRow}>
-                  <Text style={styles.tableCell}>TXN-89230</Text>
-                  <Text style={styles.tableCell}>Daniel K.</Text>
-                  <Text style={styles.tableCell}>Withdrawal</Text>
-                  <Text style={styles.tableCell}>Education</Text>
-                  <Text style={styles.tableCell}>UGX 200,000</Text>
-                  <Text style={styles.tableCellPending}>Pending</Text>
-                </View>
-                <View style={styles.tableRow}>
-                  <Text style={styles.tableCell}>TXN-89229</Text>
-                  <Text style={styles.tableCell}>Sarah M.</Text>
-                  <Text style={styles.tableCell}>Allowance</Text>
-                  <Text style={styles.tableCell}>Allowance</Text>
-                  <Text style={styles.tableCell}>UGX 25,000</Text>
-                  <Text style={styles.tableCellSuccess}>Completed</Text>
-                </View>
-                <View style={styles.tableRow}>
-                  <Text style={styles.tableCell}>TXN-89228</Text>
-                  <Text style={styles.tableCell}>Michael T.</Text>
-                  <Text style={styles.tableCell}>Payment</Text>
-                  <Text style={styles.tableCell}>Entertainment</Text>
-                  <Text style={styles.tableCell}>UGX 15,000</Text>
-                  <Text style={styles.tableCellSuccess}>Completed</Text>
-                </View>
-                <View style={styles.tableRow}>
-                  <Text style={styles.tableCell}>TXN-89227</Text>
-                  <Text style={styles.tableCell}>Aisha N.</Text>
-                  <Text style={styles.tableCell}>Withdrawal</Text>
-                  <Text style={styles.tableCell}>Shopping</Text>
-                  <Text style={styles.tableCell}>UGX 50,000</Text>
-                  <Text style={styles.tableCellDanger}>Rejected</Text>
-                </View>
+                {overview.recentTransactions.map((tx) => (
+                  <View key={tx.id} style={styles.tableRow}>
+                    <Text style={styles.tableCell}>{tx.id.slice(0, 8).toUpperCase()}</Text>
+                    <Text style={styles.tableCell}>{tx.childName}</Text>
+                    <Text style={styles.tableCell}>{tx.type}</Text>
+                    <Text style={styles.tableCell}>{tx.category}</Text>
+                    <Text style={styles.tableCell}>UGX {Math.round(tx.amount).toLocaleString()}</Text>
+                    <Text
+                      style={
+                        tx.status === "approved"
+                          ? styles.tableCellSuccess
+                          : tx.status === "pending"
+                            ? styles.tableCellPending
+                            : styles.tableCellDanger
+                      }
+                    >
+                      {tx.status}
+                    </Text>
+                  </View>
+                ))}
               </View>
               <View style={styles.colStack}>
                 <View style={styles.softCard}>
@@ -557,19 +851,36 @@ export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenPr
                     <Text style={styles.cardTitle}>Top Saving Goals</Text>
                     <Text style={styles.cardLink}>View All</Text>
                   </View>
-                  <View style={styles.simpleListRow}><Text style={styles.rowMain}>1 New Bicycle</Text><Text style={styles.rowMeta}>UGX 48,700,000</Text></View>
-                  <View style={styles.simpleListRow}><Text style={styles.rowMain}>2 Laptop</Text><Text style={styles.rowMeta}>UGX 78,600,000</Text></View>
-                  <View style={styles.simpleListRow}><Text style={styles.rowMain}>3 School Fees</Text><Text style={styles.rowMeta}>UGX 32,400,000</Text></View>
-                  <View style={styles.simpleListRow}><Text style={styles.rowMain}>4 Tablet</Text><Text style={styles.rowMeta}>UGX 21,800,000</Text></View>
+                  {overview.topSavingGoals.map((goal, idx) => (
+                    <View key={goal.id} style={styles.simpleListRow}>
+                      <Text style={styles.rowMain}>
+                        {idx + 1} {goal.title} ({goal.childName})
+                      </Text>
+                      <Text style={styles.rowMeta}>UGX {Math.round(goal.currentAmount).toLocaleString()}</Text>
+                    </View>
+                  ))}
                 </View>
                 <View style={styles.softCard}>
                   <View style={styles.cardHeadRow}>
                     <Text style={styles.cardTitle}>Support Tickets</Text>
                     <Text style={styles.cardLink}>View All</Text>
                   </View>
-                  <View style={styles.simpleListRow}><Text style={styles.rowMain}>#TKT-1029 Balance discrepancy</Text><Text style={styles.tableCellDanger}>Open</Text></View>
-                  <View style={styles.simpleListRow}><Text style={styles.rowMain}>#TKT-1028 Failed withdrawal</Text><Text style={styles.tableCellPending}>In Progress</Text></View>
-                  <View style={styles.simpleListRow}><Text style={styles.rowMain}>#TKT-1027 Login issue</Text><Text style={styles.tableCellSuccess}>Resolved</Text></View>
+                  {overview.supportTickets.map((ticket) => (
+                    <View key={ticket.id} style={styles.simpleListRow}>
+                      <Text style={styles.rowMain}>#{ticket.id.slice(0, 8).toUpperCase()} {ticket.issueType}</Text>
+                      <Text
+                        style={
+                          ticket.status.toLowerCase() === "resolved"
+                            ? styles.tableCellSuccess
+                            : ticket.status.toLowerCase() === "open"
+                              ? styles.tableCellDanger
+                              : styles.tableCellPending
+                        }
+                      >
+                        {ticket.status}
+                      </Text>
+                    </View>
+                  ))}
                 </View>
               </View>
             </View>
@@ -582,25 +893,66 @@ export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenPr
                 <Text style={styles.footerText}>Terms of Service</Text>
               </View>
             </View>
+            </>
+            )}
           </>
         ) : null}
 
         {!loading && tab === "lessons" ? (
           <View style={styles.sectionWrap}>
             <View style={styles.softCard}>
-              <Text style={styles.cardTitle}>Lessons</Text>
+              <Text style={styles.cardTitle}>Learning Content Library</Text>
               {lessons.map((lesson) => (
                 <View key={lesson.id} style={styles.rowItemColumn}>
                   <Text style={styles.rowMain}>{lesson.title}</Text>
-                  <Text style={styles.rowMeta}>{lesson.isPublished ? "Published" : "Draft"}</Text>
+                  <Text style={styles.rowMeta}>
+                    {lesson.resourceType.toUpperCase()} • {lesson.isPublished ? "Published" : "Draft"}
+                  </Text>
+                  {lesson.resourceUrl ? (
+                    <Text style={styles.rowMeta}>File: {lesson.fileName ?? lesson.resourceUrl}</Text>
+                  ) : null}
                 </View>
               ))}
               {lessons.length === 0 ? <Text style={styles.infoText}>No lessons yet.</Text> : null}
             </View>
             <View style={styles.softCard}>
-              <Text style={styles.cardTitle}>Create Lesson</Text>
+              <Text style={styles.cardTitle}>Upload Learning Material</Text>
               <AppInput label="Title" value={lessonTitle} onChangeText={setLessonTitle} />
-              <AppInput label="Content" value={lessonContent} onChangeText={setLessonContent} multiline numberOfLines={4} />
+              <AppInput
+                label="Description / Instructions"
+                value={lessonContent}
+                onChangeText={setLessonContent}
+                multiline
+                numberOfLines={4}
+              />
+              <View style={styles.toggleRowGroup}>
+                {(["text", "pdf", "video"] as const).map((kind) => (
+                  <Pressable
+                    key={kind}
+                    style={[styles.chipBtn, lessonResourceType === kind && styles.chipBtnActive]}
+                    onPress={() => setLessonResourceType(kind)}
+                  >
+                    <Text style={[styles.chipBtnText, lessonResourceType === kind && styles.chipBtnTextActive]}>
+                      {kind.toUpperCase()}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+              {lessonResourceType !== "text" ? (
+                <>
+                  <AppButton title="Choose File From Computer" loading={submitting} onPress={handlePickLearningFile} />
+                  <Text style={styles.rowMeta}>{lessonFileName ? `Selected: ${lessonFileName}` : "No file selected yet."}</Text>
+                  <AppButton title="Upload For Parents" loading={submitting} onPress={handleUploadForParents} />
+                </>
+              ) : null}
+              <AppInput
+                label="Optional Public URL (video or PDF link)"
+                value={lessonResourceUrl}
+                onChangeText={setLessonResourceUrl}
+              />
+              {lessonResourceType === "text" ? (
+                <AppButton title="Upload For Parents" loading={submitting} onPress={handleUploadForParents} />
+              ) : null}
               <AppButton title="Create Lesson" loading={submitting} onPress={handleCreateLesson} />
               <AppButton title="Back to Overview" variant="ghost" onPress={() => setTab("home")} />
             </View>
@@ -629,6 +981,47 @@ export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenPr
         ) : null}
 
       </ScrollView>
+
+      {selectedParent ? (
+        <View style={styles.modalOverlay}>
+          <Pressable style={styles.modalBackdrop} onPress={() => setSelectedParent(null)} />
+          <View style={styles.modalCard}>
+            <View style={styles.cardHeadRow}>
+              <Text style={styles.cardTitle}>Parent: {parentModalAction}</Text>
+              <Pressable onPress={() => setSelectedParent(null)}><Text style={styles.cardLink}>Close</Text></Pressable>
+            </View>
+            <Text style={styles.rowMain}>{selectedParent.name}</Text>
+            <Text style={styles.rowMeta}>{selectedParent.email} • {selectedParent.phone}</Text>
+            <Text style={styles.rowMeta}>Children linked: {selectedParent.childrenCount}</Text>
+            <Text style={styles.rowMeta}>Total wallet balance managed: UGX {Math.round(selectedParent.walletManaged).toLocaleString()}</Text>
+            <Text style={styles.rowMeta}>Recent transactions: 8 in last 7 days (mock)</Text>
+            <Text style={styles.rowMeta}>Pending approvals: {selectedParent.pendingApprovals}</Text>
+            <Text style={styles.rowMeta}>Audit activity: {selectedParent.auditActivity}</Text>
+            <Text style={styles.rowMeta}>Account status controls: {selectedParent.accountStatus}</Text>
+          </View>
+        </View>
+      ) : null}
+
+      {selectedChild ? (
+        <View style={styles.modalOverlay}>
+          <Pressable style={styles.modalBackdrop} onPress={() => setSelectedChild(null)} />
+          <View style={styles.modalCard}>
+            <View style={styles.cardHeadRow}>
+              <Text style={styles.cardTitle}>Child: {childModalAction}</Text>
+              <Pressable onPress={() => setSelectedChild(null)}><Text style={styles.cardLink}>Close</Text></Pressable>
+            </View>
+            <Text style={styles.rowMain}>{selectedChild.name} • Age {selectedChild.age}</Text>
+            <Text style={styles.rowMeta}>Parent linked: {selectedChild.parentName}</Text>
+            <Text style={styles.rowMeta}>Wallet balance: UGX {Math.round(selectedChild.walletBalance).toLocaleString()}</Text>
+            <Text style={styles.rowMeta}>Savings goals: {selectedChild.goals}</Text>
+            <Text style={styles.rowMeta}>Recent transactions: 6 in last 7 days (mock)</Text>
+            <Text style={styles.rowMeta}>Chores/rewards activity: Updated today (mock)</Text>
+            <Text style={styles.rowMeta}>Learning progress: {selectedChild.learningProgress}%</Text>
+            <Text style={styles.rowMeta}>Spending limits: UGX {Math.round(selectedChild.spendingLimit).toLocaleString()}</Text>
+            <Text style={styles.rowMeta}>Audit activity: {selectedChild.auditActivity}</Text>
+          </View>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -904,6 +1297,200 @@ const styles = StyleSheet.create({
   },
   sectionWrap: {
     gap: 10,
+  },
+  adminStatGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
+  },
+  adminStatCard: {
+    minWidth: 210,
+    flexGrow: 1,
+    borderRadius: 12,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#e8eaf5",
+    padding: 14,
+    shadowColor: "#1d2b53",
+    shadowOpacity: 0.05,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+  },
+  adminStatTitle: {
+    color: "#6a7391",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  adminStatValue: {
+    color: "#151f46",
+    fontSize: 24,
+    fontWeight: "800",
+    marginTop: 6,
+  },
+  adminStatSub: {
+    color: "#7b859f",
+    fontSize: 11,
+    marginTop: 4,
+  },
+  adminFilterWrap: {
+    borderRadius: 12,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#e8eaf5",
+    padding: 12,
+    gap: 8,
+  },
+  adminFilterSearch: {
+    marginBottom: 2,
+  },
+  adminFilterGroup: {
+    gap: 6,
+  },
+  adminFilterLabel: {
+    color: "#58637f",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  adminFilterOptions: {
+    flexDirection: "row",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+  adminFilterChip: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#dbe0f2",
+    backgroundColor: "#f8f9ff",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  adminFilterChipActive: {
+    borderColor: "#4d56dc",
+    backgroundColor: "#eceeff",
+  },
+  adminFilterChipText: {
+    color: "#5c6782",
+    fontWeight: "700",
+    fontSize: 11,
+  },
+  adminFilterChipTextActive: {
+    color: "#353fc5",
+  },
+  toggleRowGroup: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  chipBtn: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#dbe0f2",
+    backgroundColor: "#f7f9ff",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  chipBtnActive: {
+    borderColor: "#4d56dc",
+    backgroundColor: "#eceeff",
+  },
+  chipBtnText: {
+    color: "#5c6782",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  chipBtnTextActive: {
+    color: "#353fc5",
+  },
+  adminTableWrap: {
+    borderRadius: 12,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#e8eaf5",
+    overflow: "hidden",
+  },
+  adminTableHead: {
+    flexDirection: "row",
+    backgroundColor: "#f4f6fd",
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+  },
+  adminTableHeadText: {
+    flex: 1,
+    minWidth: 90,
+    color: "#4b5672",
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  adminTableRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderTopWidth: 1,
+    borderTopColor: "#edf1fb",
+    paddingVertical: 9,
+    paddingHorizontal: 8,
+  },
+  adminTableCell: {
+    flex: 1,
+    minWidth: 90,
+    color: "#2b3551",
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  statusBadge: {
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    alignSelf: "flex-start",
+  },
+  statusBadgeGood: {
+    backgroundColor: "#e6f8ee",
+  },
+  statusBadgeWarn: {
+    backgroundColor: "#fff4dd",
+  },
+  statusBadgeBad: {
+    backgroundColor: "#ffe6e9",
+  },
+  statusBadgeText: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: "#344055",
+  },
+  detailPanel: {
+    borderRadius: 12,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#e8eaf5",
+    padding: 14,
+    gap: 8,
+    shadowColor: "#1d2b53",
+    shadowOpacity: 0.06,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+  },
+  modalOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: "center",
+    alignItems: "center",
+    zIndex: 100,
+  },
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(8, 13, 35, 0.45)",
+  },
+  modalCard: {
+    width: "78%",
+    maxWidth: 920,
+    borderRadius: 14,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#e8eaf5",
+    padding: 18,
+    gap: 8,
+    shadowColor: "#151f46",
+    shadowOpacity: 0.16,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 12 },
   },
   tabButton: {
     borderRadius: 10,

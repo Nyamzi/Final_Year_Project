@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
-import { apiLogin, setAuthToken, UserRole } from "../../lib/api";
+import { Platform } from "react-native";
+import { Image, Pressable, StyleSheet, Text, View } from "react-native";
+import { apiLogin, apiLogout, setAuthToken, UserRole } from "../../lib/api";
 import { AppButton, AppInput } from "../../ui/controls";
 import { theme } from "../../ui/theme";
 
@@ -21,6 +22,18 @@ export function LoginScreen({ onLoginSuccess, onGoToRegister }: LoginScreenProps
 
     try {
       const data = await apiLogin({ email, password });
+
+      if (data.role === "admin" && Platform.OS !== "web") {
+        setAuthToken(null);
+        try {
+          await apiLogout();
+        } catch {
+          // If logout fails, we still block admin mobile access.
+        }
+        setError("Admin access is available on web only.");
+        return;
+      }
+
       setAuthToken(data.token ?? null);
       onLoginSuccess({ email, role: data.role });
     } catch (err) {
@@ -33,9 +46,7 @@ export function LoginScreen({ onLoginSuccess, onGoToRegister }: LoginScreenProps
 
   return (
     <View style={styles.container}>
-      <View style={styles.logoBubble}>
-        <Text style={styles.logoText}>KB</Text>
-      </View>
+      <Image source={require("../../../assets/Logo/logo.jpg")} style={styles.logoImage} resizeMode="cover" />
       <Text style={styles.title}>Kids Banking</Text>
       <Text style={styles.subtitle}>Smart money habits start here</Text>
 
@@ -85,19 +96,13 @@ const styles = StyleSheet.create({
     padding: 20,
     gap: 12,
   },
-  logoBubble: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
+  logoImage: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
     alignSelf: "center",
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: theme.colors.primary,
-  },
-  logoText: {
-    color: "#fff",
-    fontSize: 18,
-    fontWeight: "800",
+    borderWidth: 1,
+    borderColor: "#e6e9fb",
   },
   title: {
     textAlign: "center",

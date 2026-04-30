@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Animated, Easing, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { Animated, Easing, Pressable, ScrollView, Share, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import {
   apiChangePassword,
   apiCreateParentAllowance,
@@ -10,6 +10,7 @@ import {
   apiParentAllowances,
   apiParentAllTransactions,
   apiParentAccountBalance,
+  apiParentChangeChildPassword,
   apiParentChildSavingsGoals,
   apiParentChildren,
   apiParentChores,
@@ -17,13 +18,20 @@ import {
   apiParentFundChild,
   apiParentPendingTransactions,
   apiParentPreferences,
+  apiParentTransactionStatementPdf,
+  apiParentReportExport,
   apiParentReportSummary,
+  apiParentAssignLearningLesson,
+  apiParentLearningAssignments,
   apiParentPublishedLessons,
   apiParentSpendingLimit,
   apiParentSupportTickets,
   apiParentNotifications,
+  apiParentMarkAllNotificationsRead,
+  apiParentMarkNotificationsRead,
   apiParentTransactionDecision,
   apiLogDashboardAction,
+  API_BASE_URL,
   apiUpdateParentAllowance,
   apiUpdateParentAccount,
   apiUpdateParentPreferences,
@@ -39,6 +47,9 @@ import {
   ParentNotification,
   ParentPreferences,
   ParentReportSummary,
+  ParentReportExportType,
+  StatementIncludeField,
+  ParentLearningAssignment,
   ParentTransactionSummary,
 } from "../../lib/api";
 import { AppButton, AppDateInput, AppInput } from "../../ui/controls";
@@ -59,13 +70,14 @@ type Tab =
   | "transactions"
   | "allowances"
   | "chores"
-  | "progress"
   | "learning"
   | "limits"
   | "notifications"
   | "reports"
   | "support"
   | "settings";
+
+type ReportRange = "this_month" | "last_30_days" | "all_time";
 
 const navItems: Array<{ key: Tab; label: string; icon: string }> = [
   { key: "home", label: "Home", icon: "🏠" },
@@ -74,7 +86,6 @@ const navItems: Array<{ key: Tab; label: string; icon: string }> = [
   { key: "transactions", label: "Transactions", icon: "📋" },
   { key: "allowances", label: "Allowances", icon: "💰" },
   { key: "chores", label: "Chores", icon: "✅" },
-  { key: "progress", label: "Child Progress", icon: "📊" },
   { key: "learning", label: "Learning Content", icon: "🐦" },
   { key: "limits", label: "Spending Limits", icon: "💳" },
   { key: "notifications", label: "Notifications", icon: "🔔" },
@@ -84,44 +95,66 @@ const navItems: Array<{ key: Tab; label: string; icon: string }> = [
 ];
 
 const formatMoney = (value: number) => `UGX ${value.toLocaleString()}`;
+const formatCompactMoney = (value: number) => {
+  if (value >= 1_000_000) return `UGX ${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `UGX ${(value / 1_000).toFixed(1)}K`;
+  return formatMoney(value);
+};
 
-const STATIC_LESSONS = [
-  {
-    id: "s1",
-    icon: "🐷",
-    tag: "Saving Basics",
-    title: "Why Saving Money Matters",
-    content: "Saving money means setting aside some of what you earn for later. When you save regularly, your money grows over time and you can buy bigger things you really want — like a bicycle or a school trip.",
+const EMPTY_REPORT_SUMMARY: ParentReportSummary = {
+  parent: {
+    currentBalance: 0,
+    totalDeposited: 0,
+    depositTransactions: 0,
+    totalDepositAmount: 0,
+    reservedForActiveAllowances: 0,
+    totalSentToChildren: 0,
   },
-  {
-    id: "s2",
-    icon: "🛒",
-    tag: "Needs vs Wants",
-    title: "Needs vs Wants",
-    content: "Needs are things you must have to survive — food, school supplies, clothes. Wants are things you would like but don't need right now. Learning to tell the difference helps you spend wisely.",
+  children: {
+    childCount: 0,
+    approvedCount: 0,
+    pendingCount: 0,
+    totalSpent: 0,
+    totalEarned: 0,
+    walletBalance: 0,
+    lifetimeEarned: 0,
+    lifetimeSpent: 0,
+    goalsCompleted: 0,
+    choresCompleted: 0,
   },
-  {
-    id: "s3",
-    icon: "📊",
-    tag: "Budgeting",
-    title: "Making a Budget",
-    content: "A budget is a plan for your money. Every time you earn money, decide how much to save, how much to spend, and how much to give. A simple rule: save at least 20% of every shilling you receive.",
-  },
-  {
-    id: "s4",
-    icon: "📈",
-    tag: "Interest",
-    title: "How Interest Works",
-    content: "Interest is money that grows on your savings. When you keep money in a bank account, the bank pays you a small extra amount called interest. The longer you save, the more interest you earn!",
-  },
-  {
-    id: "s5",
-    icon: "🛡️",
-    tag: "Safety",
-    title: "Staying Safe with Money",
-    content: "Never share your PIN or password with anyone — not even friends. If someone asks you to send money quickly or promises you free money, tell a trusted adult. Fraudsters try to steal money by tricking people.",
-  },
-];
+};
+
+function normalizeReportSummary(summary: unknown): ParentReportSummary {
+  if (!summary || typeof summary !== "object") return EMPTY_REPORT_SUMMARY;
+
+  const candidate = summary as Record<string, unknown>;
+  const parentRaw = candidate.parent as Record<string, unknown> | undefined;
+  const childrenRaw = candidate.children as Record<string, unknown> | undefined;
+
+  // Supports both new nested shape and previous flat shape.
+  return {
+    parent: {
+      currentBalance: Number(parentRaw?.currentBalance ?? 0),
+      totalDeposited: Number(parentRaw?.totalDeposited ?? 0),
+      depositTransactions: Number(parentRaw?.depositTransactions ?? 0),
+      totalDepositAmount: Number(parentRaw?.totalDepositAmount ?? 0),
+      reservedForActiveAllowances: Number(parentRaw?.reservedForActiveAllowances ?? 0),
+      totalSentToChildren: Number(parentRaw?.totalSentToChildren ?? candidate.totalEarned ?? 0),
+    },
+    children: {
+      childCount: Number(childrenRaw?.childCount ?? 0),
+      approvedCount: Number(childrenRaw?.approvedCount ?? candidate.approvedCount ?? 0),
+      pendingCount: Number(childrenRaw?.pendingCount ?? candidate.pendingCount ?? 0),
+      totalSpent: Number(childrenRaw?.totalSpent ?? candidate.totalSpent ?? 0),
+      totalEarned: Number(childrenRaw?.totalEarned ?? candidate.totalEarned ?? 0),
+      walletBalance: Number(childrenRaw?.walletBalance ?? 0),
+      lifetimeEarned: Number(childrenRaw?.lifetimeEarned ?? 0),
+      lifetimeSpent: Number(childrenRaw?.lifetimeSpent ?? 0),
+      goalsCompleted: Number(childrenRaw?.goalsCompleted ?? candidate.goalsCompleted ?? 0),
+      choresCompleted: Number(childrenRaw?.choresCompleted ?? candidate.choresCompleted ?? 0),
+    },
+  };
+}
 
 function getInitials(name: string): string {
   return name
@@ -163,6 +196,7 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
   const [selectedChildId, setSelectedChildId] = useState("");
   const [limitAmount, setLimitAmount] = useState("");
   const [limitPeriodType, setLimitPeriodType] = useState<"weekly" | "monthly" | "quarterly">("monthly");
+  const [showLimitForm, setShowLimitForm] = useState(false);
 
   const [choreTitle, setChoreTitle] = useState("");
   const [choreDescription, setChoreDescription] = useState("");
@@ -178,15 +212,31 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
   const [allowanceChildDropdownOpen, setAllowanceChildDropdownOpen] = useState(false);
   const [choreChildDropdownOpen, setChoreChildDropdownOpen] = useState(false);
   const [showAssignChoreForm, setShowAssignChoreForm] = useState(false);
+  const [selectedChoreForDetails, setSelectedChoreForDetails] = useState<ParentChoreSummary | null>(null);
   const [limitsChildDropdownOpen, setLimitsChildDropdownOpen] = useState(false);
   const [goalsChildDropdownOpen, setGoalsChildDropdownOpen] = useState(false);
   const [fundChildDropdownOpen, setFundChildDropdownOpen] = useState(false);
+  const [txStatementChildId, setTxStatementChildId] = useState("all");
+  const [txStatementType, setTxStatementType] = useState<"all" | "earn" | "spend">("all");
+  const [txStatementStatus, setTxStatementStatus] = useState<"all" | "pending" | "approved" | "rejected">("all");
+  const [txChildDropdownOpen, setTxChildDropdownOpen] = useState(false);
+  const [txTypeDropdownOpen, setTxTypeDropdownOpen] = useState(false);
+  const [txStatusDropdownOpen, setTxStatusDropdownOpen] = useState(false);
+  const [txStatementIncludeFields, setTxStatementIncludeFields] = useState<StatementIncludeField[]>([
+    "date",
+    "child",
+    "type",
+    "status",
+    "description",
+    "amount",
+  ]);
 
   const [savingsGoals, setSavingsGoals] = useState<ParentSavingsGoalSummary[]>([]);
   const [allChildGoals, setAllChildGoals] = useState<Array<ParentSavingsGoalSummary & { childId: string; childName: string }>>([]);
   const [goalViewChildId, setGoalViewChildId] = useState("all");
   const [allTransactions, setAllTransactions] = useState<ParentTransactionSummary[]>([]);
   const [lessons, setLessons] = useState<AdminLesson[]>([]);
+  const [learningAssignments, setLearningAssignments] = useState<ParentLearningAssignment[]>([]);
 
   const [goalTitle, setGoalTitle] = useState("");
   const [goalTarget, setGoalTarget] = useState("");
@@ -213,6 +263,9 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordChildId, setPasswordChildId] = useState("");
+  const [childNewPassword, setChildNewPassword] = useState("");
+  const [childConfirmPassword, setChildConfirmPassword] = useState("");
   const [withdrawalApprovalRequired, setWithdrawalApprovalRequired] = useState(true);
   const [enableAccountFreeze, setEnableAccountFreeze] = useState(false);
   const [merchantRestrictions, setMerchantRestrictions] = useState("");
@@ -223,16 +276,13 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
   const [notifyGoals, setNotifyGoals] = useState(true);
   const [supportIssueType, setSupportIssueType] = useState("Failed approval");
   const [supportMessage, setSupportMessage] = useState("");
+  const [learningStudyStartDate, setLearningStudyStartDate] = useState("");
+  const [learningStudyEndDate, setLearningStudyEndDate] = useState("");
   const [supportTickets, setSupportTickets] = useState<ParentSupportTicket[]>([]);
   const [notifications, setNotifications] = useState<ParentNotification[]>([]);
-  const [reportSummary, setReportSummary] = useState<ParentReportSummary>({
-    approvedCount: 0,
-    pendingCount: 0,
-    totalSpent: 0,
-    totalEarned: 0,
-    goalsCompleted: 0,
-    choresCompleted: 0,
-  });
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
+  const [reportSummary, setReportSummary] = useState<ParentReportSummary>(EMPTY_REPORT_SUMMARY);
+  const [reportRange, setReportRange] = useState<ReportRange>("this_month");
 
   const totalChildBalance = useMemo(
     () => children.reduce((sum, child) => sum + (child.wallet?.balance ?? 0), 0),
@@ -274,15 +324,16 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
     setError("");
 
     try {
-      const [childrenData, pendingData, choresData, allowancesData, transactionsData, lessonsData, preferencesData, reportsData, supportData, notificationsData, parentAccountData] = await Promise.all([
+      const [childrenData, pendingData, choresData, allowancesData, transactionsData, lessonsData, learningAssignmentsData, preferencesData, reportsData, supportData, notificationsData, parentAccountData] = await Promise.all([
         apiParentChildren(),
         apiParentPendingTransactions(),
         apiParentChores(),
         apiParentAllowances(),
         apiParentAllTransactions(),
         apiParentPublishedLessons().catch(() => ({ lessons: [] as AdminLesson[] })),
+        apiParentLearningAssignments().catch(() => ({ assignments: [] as ParentLearningAssignment[] })),
         apiParentPreferences(),
-        apiParentReportSummary(),
+        apiParentReportSummary(reportRange),
         apiParentSupportTickets(),
         apiParentNotifications(),
         apiParentAccountBalance(),
@@ -294,17 +345,20 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
       setAllowances(allowancesData.allowances);
       setAllTransactions(transactionsData.transactions);
       setLessons(lessonsData.lessons);
+      setLearningAssignments(learningAssignmentsData.assignments);
       await loadAllGoalsForChildren(childrenData.children);
       applyPreferences(preferencesData.preferences);
-      setReportSummary(reportsData.summary);
+      setReportSummary(normalizeReportSummary(reportsData.summary));
       setSupportTickets(supportData.tickets);
       setNotifications(notificationsData.notifications);
+      setUnreadNotificationCount(notificationsData.unreadCount ?? notificationsData.notifications.filter((item) => !item.isRead).length);
       setParentAccount(parentAccountData);
 
       if (childrenData.children.length > 0) {
         if (!selectedChildId) setSelectedChildId(childrenData.children[0].id);
         if (!goalChildId) setGoalChildId(childrenData.children[0].id);
         if (!fundChildId) setFundChildId(childrenData.children[0].id);
+        if (!passwordChildId) setPasswordChildId(childrenData.children[0].id);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load parent dashboard.");
@@ -315,7 +369,7 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
 
   useEffect(() => {
     loadParentData();
-  }, []);
+  }, [reportRange]);
 
   useEffect(() => {
     if (!isMobile) {
@@ -358,6 +412,31 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
   function clearMessages() {
     setStatus("");
     setError("");
+  }
+
+  async function handleMarkNotificationRead(notificationId: string) {
+    try {
+      await apiParentMarkNotificationsRead([notificationId]);
+      setNotifications((prev) => prev.map((item) => (item.id === notificationId ? { ...item, isRead: true } : item)));
+      setUnreadNotificationCount((prev) => Math.max(0, prev - 1));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not mark notification as read.");
+    }
+  }
+
+  async function handleMarkAllNotificationsRead() {
+    setSubmitting(true);
+    clearMessages();
+    try {
+      const data = await apiParentMarkAllNotificationsRead();
+      setStatus(data.message);
+      setNotifications((prev) => prev.map((item) => ({ ...item, isRead: true })));
+      setUnreadNotificationCount(0);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not mark all notifications as read.");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   async function handleCreateChild() {
@@ -444,6 +523,8 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
       const data = await apiParentSpendingLimit({ childId: selectedChildId, monthlyLimit, periodType: limitPeriodType });
       setStatus(data.message);
       setLimitAmount("");
+      setShowLimitForm(false);
+      setLimitsChildDropdownOpen(false);
       await loadParentData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not update limit.");
@@ -615,6 +696,40 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
     }
   }
 
+  async function handleChangeChildPassword() {
+    const nextPassword = childNewPassword.trim();
+    const nextConfirmPassword = childConfirmPassword.trim();
+
+    if (!passwordChildId) {
+      setError("Select a child account first.");
+      return;
+    }
+    if (nextPassword.length < 8) {
+      setError("Child password must be at least 8 characters.");
+      return;
+    }
+    if (nextPassword !== nextConfirmPassword) {
+      setError("Child password confirmation does not match.");
+      return;
+    }
+
+    setSubmitting(true);
+    clearMessages();
+    try {
+      const data = await apiParentChangeChildPassword(passwordChildId, {
+        newPassword: nextPassword,
+        confirmPassword: nextConfirmPassword,
+      });
+      setStatus(data.message);
+      setChildNewPassword("");
+      setChildConfirmPassword("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not change child password.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   async function handleCreateSavingsGoal() {
     const target = Number(goalTarget);
     if (!goalChildId) { setError("Select a child first."); return; }
@@ -738,6 +853,57 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
     }
   }
 
+  async function handleAssignLearningLesson(lessonId: string) {
+    if (!selectedChildId) {
+      setError("Select a child before assigning learning content.");
+      return;
+    }
+    if (!learningStudyStartDate || !learningStudyEndDate) {
+      setError("Select both study start and study end dates.");
+      return;
+    }
+    const startDate = new Date(learningStudyStartDate);
+    const endDate = new Date(learningStudyEndDate);
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+      setError("Enter valid study dates.");
+      return;
+    }
+    if (endDate < startDate) {
+      setError("Study end date must be after start date.");
+      return;
+    }
+
+    setSubmitting(true);
+    clearMessages();
+    try {
+      const data = await apiParentAssignLearningLesson({
+        childId: selectedChildId,
+        lessonId,
+        studyStartAt: learningStudyStartDate,
+        studyEndAt: learningStudyEndDate,
+      });
+      setStatus(data.message);
+      const refreshedAssignments = await apiParentLearningAssignments().catch(() => ({ assignments: [] as ParentLearningAssignment[] }));
+      setLearningAssignments(refreshedAssignments.assignments);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not assign learning lesson.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function openLessonResource(resourceUrl: string) {
+    const fullUrl = resourceUrl.startsWith("http")
+      ? resourceUrl
+      : `${API_BASE_URL}${resourceUrl.startsWith("/") ? resourceUrl : `/${resourceUrl}`}`;
+    const browserRef = globalThis as unknown as { open?: (url: string, target?: string) => void };
+    if (typeof browserRef.open === "function") {
+      browserRef.open(fullUrl, "_blank");
+      return;
+    }
+    setStatus(`Open this link: ${fullUrl}`);
+  }
+
   function handleTabPress(nextTab: Tab) {
     void apiLogDashboardAction({ dashboard: "parent", action: `Open tab: ${nextTab}` }).catch(() => undefined);
     setTab(nextTab);
@@ -758,6 +924,7 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
     }
     if (nextTab !== "limits") {
       setLimitsChildDropdownOpen(false);
+      setShowLimitForm(false);
     }
     if (nextTab !== "goals") {
       setGoalsChildDropdownOpen(false);
@@ -799,10 +966,20 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
     handleTabPress("goals");
   }
 
+  function handleOpenLimitForm(childId?: string) {
+    if (childId) {
+      setSelectedChildId(childId);
+    }
+    setLimitsChildDropdownOpen(false);
+    setShowLimitForm(true);
+    handleTabPress("limits");
+  }
+
   const activeTabLabel = navItems.find((item) => item.key === tab)?.label ?? "Dashboard";
-  const notificationBadgeCount = Math.min(9, notifications.length);
+  const notificationBadgeCount = Math.min(9, unreadNotificationCount);
   const openSupportCount = Math.min(9, supportTickets.filter((ticket) => ticket.status === "open").length);
   const visibleGoalRows = allChildGoals.filter((goal) => goalViewChildId === "all" || goal.childId === goalViewChildId);
+  const completedGoalRows = visibleGoalRows.filter((goal) => goal.status === "completed");
   const activeSavingsGoals = allChildGoals.filter((goal) => goal.status === "active");
   const goalsOnTrack = allChildGoals.filter((goal) => (goal.targetAmount > 0 ? (goal.currentAmount / goal.targetAmount) * 100 >= 50 : false)).length;
   const goalsBehind = Math.max(0, allChildGoals.length - goalsOnTrack);
@@ -824,6 +1001,22 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
   const approvedRewardCount = approvedTransactions.filter((tx) => (tx.description ?? "").toLowerCase().includes("chore")).length;
   const totalAllowancesValue = allowances.reduce((sum, item) => sum + item.amount, 0);
   const activeAllowancesCount = allowances.filter((item) => item.isActive).length;
+  const scheduledAllowances = allowances.filter((item) => item.isActive);
+  const learningProgressPercent = learningAssignments.length === 0
+    ? 0
+    : Math.round(
+        learningAssignments.reduce((sum, assignment) => sum + Number(assignment.progressPercent ?? 0), 0) / learningAssignments.length
+      );
+  const budgetingSkillsPercent = reportSummary.children.totalEarned > 0
+    ? Math.max(
+        0,
+        Math.min(
+          100,
+          Math.round(((reportSummary.children.totalEarned - reportSummary.children.totalSpent) / reportSummary.children.totalEarned) * 100)
+        )
+      )
+    : 0;
+  const badgesEarnedCount = reportSummary.children.goalsCompleted + reportSummary.children.choresCompleted;
   const now = new Date();
   const paidThisMonth = approvedTransactions
     .filter((tx) => (tx.description ?? "").toLowerCase().includes("allowance"))
@@ -840,6 +1033,125 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
     })
     .sort((a, b) => new Date(a.availableOn).getTime() - new Date(b.availableOn).getTime());
   const upcomingPaymentsTotal = upcomingPayments.reduce((sum, item) => sum + item.amount, 0);
+  const childProgressMetrics = children.map((child) => {
+    const childGoals = allChildGoals.filter((goal) => goal.childId === child.id);
+    const completedGoals = childGoals.filter((goal) => goal.status === "completed").length;
+    const childSavedInGoals = childGoals.reduce((sum, goal) => sum + goal.currentAmount, 0);
+    const completedChildChores = chores.filter((chore) => chore.childId === child.id && chore.status === "completed").length;
+    const badgesEarned = completedGoals + completedChildChores;
+    const totalSaved = (child.wallet?.balance ?? 0) + childSavedInGoals;
+
+    return {
+      child,
+      totalSaved,
+      completedGoals,
+      badgesEarned,
+    };
+  });
+  const selectedChoreCompletionLabel = selectedChoreForDetails?.completedAt
+    ? new Date(selectedChoreForDetails.completedAt).toLocaleString()
+    : "Not completed yet";
+  const selectedChoreDeadlineLabel = selectedChoreForDetails?.dueDate
+    ? new Date(selectedChoreForDetails.dueDate).toLocaleString()
+    : "No deadline set";
+  const selectedChoreDeadlineStatus = selectedChoreForDetails
+    ? selectedChoreForDetails.status !== "completed"
+      ? "Pending completion"
+      : !selectedChoreForDetails.dueDate
+        ? "Completed (no deadline)"
+        : selectedChoreForDetails.completedAt &&
+            new Date(selectedChoreForDetails.completedAt).getTime() <= new Date(selectedChoreForDetails.dueDate).getTime()
+          ? "Completed on time"
+          : "Completed after deadline"
+    : "";
+  const filteredTransactions = allTransactions.filter((item) => {
+    if (txStatementChildId !== "all" && item.childId !== txStatementChildId) return false;
+    if (txStatementType !== "all" && item.type !== txStatementType) return false;
+    if (txStatementStatus !== "all" && item.status !== txStatementStatus) return false;
+    return true;
+  });
+
+  function toggleStatementIncludeField(field: StatementIncludeField) {
+    setTxStatementIncludeFields((prev) => {
+      if (prev.includes(field)) {
+        return prev.length > 1 ? prev.filter((item) => item !== field) : prev;
+      }
+      return [...prev, field];
+    });
+  }
+  async function handleDownloadReport(type: ParentReportExportType) {
+    try {
+      clearMessages();
+      const exported = await apiParentReportExport(type, reportRange);
+      if (!exported.csv || exported.rowCount === 0) {
+        setError("No data available for this report in the selected range.");
+        return;
+      }
+
+      if (typeof document !== "undefined") {
+        const blob = new Blob([exported.csv], { type: "text/csv;charset=utf-8;" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = exported.filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      } else {
+        await Share.share({
+          title: exported.filename,
+          message: `${exported.filename}\n\n${exported.csv}`,
+        });
+      }
+
+      setStatus(`Downloaded ${exported.filename}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to download report.");
+    }
+  }
+
+  async function handleExportTransactionStatementPdf() {
+    try {
+      clearMessages();
+      setSubmitting(true);
+      const response = await apiParentTransactionStatementPdf({
+        childId: txStatementChildId,
+        txType: txStatementType,
+        txStatus: txStatementStatus,
+        include: txStatementIncludeFields,
+      });
+
+      if (!response.pdfBase64) {
+        setError("Could not generate statement PDF.");
+        return;
+      }
+
+      if (typeof document !== "undefined") {
+        const binary = atob(response.pdfBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        const blob = new Blob([bytes], { type: response.mimeType || "application/pdf" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = response.filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        setStatus(`Downloaded ${response.filename}`);
+      } else {
+        setError("PDF download is available on web for now.");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to export statement PDF.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   return (
     <View style={[styles.container, isMobile && styles.containerMobile]}>
@@ -974,7 +1286,9 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                     </View>
                   </View>
                   <Text style={styles.mobileBalanceAmount}>{formatMoney(parentAccount.balance)}</Text>
-                  <Text style={styles.mobileBalanceSubtext}>Parent account • {children.length} children • {pending.length} pending approvals</Text>
+                  <Text style={styles.mobileBalanceSubtext}>
+                    Parent account • {reportSummary.children.childCount} children • {reportSummary.children.pendingCount} pending approvals
+                  </Text>
                 </View>
 
                 <View style={styles.mobileQuickActionRow}>
@@ -1095,7 +1409,7 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                 <View style={styles.desktopKpiGrid}>
                   <View style={styles.desktopKpiCard}>
                     <Text style={styles.desktopKpiLabel}>Children Managed</Text>
-                    <Text style={styles.desktopKpiValue}>{children.length}</Text>
+                    <Text style={styles.desktopKpiValue}>{reportSummary.children.childCount}</Text>
                   </View>
                   <View style={styles.desktopKpiCard}>
                     <Text style={styles.desktopKpiLabel}>Parent Account Balance</Text>
@@ -1103,7 +1417,7 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                   </View>
                   <View style={styles.desktopKpiCard}>
                     <Text style={styles.desktopKpiLabel}>Pending Approvals</Text>
-                    <Text style={styles.desktopKpiValue}>{pending.length}</Text>
+                    <Text style={styles.desktopKpiValue}>{reportSummary.children.pendingCount}</Text>
                   </View>
                   <View style={styles.desktopKpiCard}>
                     <Text style={styles.desktopKpiLabel}>Active Savings Goals</Text>
@@ -1111,11 +1425,11 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                   </View>
                   <View style={styles.desktopKpiCard}>
                     <Text style={styles.desktopKpiLabel}>Completed Chores</Text>
-                    <Text style={styles.desktopKpiValue}>{completedChores}</Text>
+                    <Text style={styles.desktopKpiValue}>{reportSummary.children.choresCompleted}</Text>
                   </View>
                   <View style={styles.desktopKpiCard}>
                     <Text style={styles.desktopKpiLabel}>Learning Progress</Text>
-                    <Text style={styles.desktopKpiValue}>{Math.min(100, lessons.length * 10)}%</Text>
+                    <Text style={styles.desktopKpiValue}>{learningProgressPercent}%</Text>
                   </View>
                 </View>
 
@@ -1143,7 +1457,7 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                               <Text style={styles.childStatValue}>{formatMoney(child.wallet?.balance ?? 0)}</Text>
                             </View>
                             <View style={styles.desktopChildActions}>
-                              <Pressable style={styles.desktopSmallBtn} onPress={() => handleTabPress("progress")}>
+                              <Pressable style={styles.desktopSmallBtn} onPress={() => handleTabPress("children")}>
                                 <Text style={styles.desktopSmallBtnText}>View Profile</Text>
                               </Pressable>
                               <Pressable
@@ -1219,7 +1533,7 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                         <Text style={styles.desktopPanelLink}>View all</Text>
                       </Pressable>
                     </View>
-                    {allChildGoals.slice(0, 4).map((goal) => {
+                    {activeSavingsGoals.slice(0, 4).map((goal) => {
                       const pct = goal.targetAmount > 0 ? Math.min(100, Math.round((goal.currentAmount / goal.targetAmount) * 100)) : 0;
                       return (
                         <View key={goal.id} style={styles.desktopGoalRow}>
@@ -1231,7 +1545,7 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                         </View>
                       );
                     })}
-                    {allChildGoals.length === 0 ? <Text style={styles.activityEmpty}>No goals yet.</Text> : null}
+                    {activeSavingsGoals.length === 0 ? <Text style={styles.activityEmpty}>No active goals yet.</Text> : null}
                   </View>
                 </View>
               </>
@@ -1309,7 +1623,7 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                               </View>
                             </View>
                             <View style={styles.desktopChildActions}>
-                              <Pressable style={styles.desktopSmallBtn} onPress={() => handleTabPress("progress")}>
+                              <Pressable style={styles.desktopSmallBtn} onPress={() => handleTabPress("children")}>
                                 <Text style={styles.desktopSmallBtnText}>View Profile</Text>
                               </Pressable>
                               <Pressable
@@ -1618,34 +1932,27 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                           </Pressable>
                         ))}
                       </View>
-                      {visibleGoalRows.map((goal) => {
+                      {completedGoalRows.map((goal) => {
                         const pct = goal.targetAmount > 0 ? Math.min(100, Math.round((goal.currentAmount / goal.targetAmount) * 100)) : 0;
                         return (
                           <View key={goal.id} style={styles.goalsRowCard}>
                             <View style={styles.goalsRowMain}>
                               <Text style={styles.listItemMain}>{goal.childName} - {goal.title}</Text>
                               <Text style={styles.listItemMeta}>{formatMoney(goal.currentAmount)} / {formatMoney(goal.targetAmount)}</Text>
+                              <Text style={styles.listItemMeta}>
+                                Completed on: {goal.completedAt ? new Date(goal.completedAt).toLocaleDateString() : "N/A"}
+                              </Text>
                               <View style={styles.progressTrack}>
                                 <View style={[styles.progressFill, { width: `${pct}%` as any }]} />
                               </View>
                             </View>
                             <View style={styles.goalsRowSide}>
                               <Text style={styles.goalPct}>{pct}%</Text>
-                              <Pressable
-                                style={[styles.desktopSmallBtn, styles.desktopSmallBtnPrimary]}
-                                onPress={() => {
-                                  setFundChildId(goal.childId);
-                                  setShowFundForm(true);
-                                  handleTabPress("children");
-                                }}
-                              >
-                                <Text style={[styles.desktopSmallBtnText, styles.desktopSmallBtnPrimaryText]}>Add Money</Text>
-                              </Pressable>
                             </View>
                           </View>
                         );
                       })}
-                      {visibleGoalRows.length === 0 ? <Text style={styles.activityEmpty}>No savings goals found.</Text> : null}
+                      {completedGoalRows.length === 0 ? <Text style={styles.activityEmpty}>No completed goals found.</Text> : null}
                     </View>
                   </View>
 
@@ -1723,7 +2030,7 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                     <Text style={styles.childrenSubtitle}>View and track all wallet transactions across your children's accounts.</Text>
                   </View>
                   <View style={styles.childrenTopActions}>
-                    <Pressable style={styles.childrenTopBtn}>
+                    <Pressable style={styles.childrenTopBtn} onPress={handleExportTransactionStatementPdf}>
                       <Text style={styles.childrenTopBtnText}>Export Statement</Text>
                     </Pressable>
                   </View>
@@ -1755,12 +2062,126 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                 <View style={styles.childrenLayout}>
                   <View style={styles.childrenMainCol}>
                     <View style={styles.desktopPanel}>
-                      <View style={styles.transactionsFilterRow}>
-                        <View style={styles.goalsFilterPill}><Text style={styles.childrenTopBtnText}>All Children</Text></View>
-                        <View style={styles.goalsFilterPill}><Text style={styles.childrenTopBtnText}>All Types</Text></View>
-                        <View style={styles.goalsFilterPill}><Text style={styles.childrenTopBtnText}>All Statuses</Text></View>
-                        <View style={styles.goalsFilterPill}><Text style={styles.childrenTopBtnText}>Date Range</Text></View>
-                        <View style={styles.goalsFilterPill}><Text style={styles.childrenTopBtnText}>Filter</Text></View>
+                      <Text style={styles.formCardTitle}>Statement Filters</Text>
+                      <View style={styles.dropdownWrap}>
+                        <Text style={styles.childSelectorLabel}>Child</Text>
+                        <Pressable
+                          style={styles.dropdownButton}
+                          onPress={() => {
+                            setTxChildDropdownOpen((prev) => !prev);
+                            setTxTypeDropdownOpen(false);
+                            setTxStatusDropdownOpen(false);
+                          }}
+                        >
+                          <Text style={styles.dropdownButtonText}>
+                            {txStatementChildId === "all"
+                              ? "All Children"
+                              : children.find((child) => child.id === txStatementChildId)?.nickname ?? "All Children"}
+                          </Text>
+                          <Text style={styles.dropdownChevron}>{txChildDropdownOpen ? "▲" : "▼"}</Text>
+                        </Pressable>
+                        {txChildDropdownOpen ? (
+                          <View style={styles.dropdownMenu}>
+                            <Pressable
+                              style={styles.dropdownItem}
+                              onPress={() => {
+                                setTxStatementChildId("all");
+                                setTxChildDropdownOpen(false);
+                              }}
+                            >
+                              <Text style={styles.dropdownItemText}>All Children</Text>
+                            </Pressable>
+                            {children.map((child) => (
+                              <Pressable
+                                key={child.id}
+                                style={styles.dropdownItem}
+                                onPress={() => {
+                                  setTxStatementChildId(child.id);
+                                  setTxChildDropdownOpen(false);
+                                }}
+                              >
+                                <Text style={styles.dropdownItemText}>{child.nickname}</Text>
+                              </Pressable>
+                            ))}
+                          </View>
+                        ) : null}
+                      </View>
+
+                      <View style={styles.dropdownWrap}>
+                        <Text style={styles.childSelectorLabel}>Type</Text>
+                        <Pressable
+                          style={styles.dropdownButton}
+                          onPress={() => {
+                            setTxTypeDropdownOpen((prev) => !prev);
+                            setTxChildDropdownOpen(false);
+                            setTxStatusDropdownOpen(false);
+                          }}
+                        >
+                          <Text style={styles.dropdownButtonText}>{txStatementType === "all" ? "All Types" : txStatementType}</Text>
+                          <Text style={styles.dropdownChevron}>{txTypeDropdownOpen ? "▲" : "▼"}</Text>
+                        </Pressable>
+                        {txTypeDropdownOpen ? (
+                          <View style={styles.dropdownMenu}>
+                            {(["all", "earn", "spend"] as const).map((type) => (
+                              <Pressable
+                                key={type}
+                                style={styles.dropdownItem}
+                                onPress={() => {
+                                  setTxStatementType(type);
+                                  setTxTypeDropdownOpen(false);
+                                }}
+                              >
+                                <Text style={styles.dropdownItemText}>{type === "all" ? "All Types" : type}</Text>
+                              </Pressable>
+                            ))}
+                          </View>
+                        ) : null}
+                      </View>
+
+                      <View style={styles.dropdownWrap}>
+                        <Text style={styles.childSelectorLabel}>Status</Text>
+                        <Pressable
+                          style={styles.dropdownButton}
+                          onPress={() => {
+                            setTxStatusDropdownOpen((prev) => !prev);
+                            setTxChildDropdownOpen(false);
+                            setTxTypeDropdownOpen(false);
+                          }}
+                        >
+                          <Text style={styles.dropdownButtonText}>{txStatementStatus === "all" ? "All Statuses" : txStatementStatus}</Text>
+                          <Text style={styles.dropdownChevron}>{txStatusDropdownOpen ? "▲" : "▼"}</Text>
+                        </Pressable>
+                        {txStatusDropdownOpen ? (
+                          <View style={styles.dropdownMenu}>
+                            {(["all", "pending", "approved", "rejected"] as const).map((statusItem) => (
+                              <Pressable
+                                key={statusItem}
+                                style={styles.dropdownItem}
+                                onPress={() => {
+                                  setTxStatementStatus(statusItem);
+                                  setTxStatusDropdownOpen(false);
+                                }}
+                              >
+                                <Text style={styles.dropdownItemText}>{statusItem === "all" ? "All Statuses" : statusItem}</Text>
+                              </Pressable>
+                            ))}
+                          </View>
+                        ) : null}
+                      </View>
+
+                      <Text style={styles.childSelectorLabel}>Choose what to include in the PDF statement</Text>
+                      <View style={styles.chipRow}>
+                        {(["date", "child", "type", "status", "description", "amount"] as StatementIncludeField[]).map((field) => (
+                          <Pressable
+                            key={field}
+                            style={[styles.chip, txStatementIncludeFields.includes(field) && styles.chipActive]}
+                            onPress={() => toggleStatementIncludeField(field)}
+                          >
+                            <Text style={[styles.chipText, txStatementIncludeFields.includes(field) && styles.chipTextActive]}>
+                              {field}
+                            </Text>
+                          </Pressable>
+                        ))}
                       </View>
 
                       <View style={styles.transactionsTableHeader}>
@@ -1772,7 +2193,7 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                         <Text style={styles.transactionsHeadCell}>Status</Text>
                       </View>
 
-                      {allTransactions.map((item) => (
+                      {filteredTransactions.map((item) => (
                         <View key={item.id} style={styles.transactionsRow}>
                           <Text style={styles.transactionsCell}>{new Date(item.createdAt).toLocaleDateString()}</Text>
                           <Text style={styles.transactionsCell}>{item.childName}</Text>
@@ -1786,7 +2207,7 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                           </View>
                         </View>
                       ))}
-                      {allTransactions.length === 0 ? <Text style={styles.activityEmpty}>No transactions found yet.</Text> : null}
+                      {filteredTransactions.length === 0 ? <Text style={styles.activityEmpty}>No transactions found for current filters.</Text> : null}
                     </View>
                   </View>
 
@@ -1901,11 +2322,11 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                         </View>
                       </View>
                       <View style={styles.allowancesScheduleGrid}>
-                        {allowances.slice(0, 3).map((allowance) => (
+                        {scheduledAllowances.slice(0, 3).map((allowance) => (
                           <View key={allowance.id} style={styles.allowanceCardV2}>
                             <View style={styles.desktopPanelHeader}>
                               <Text style={styles.listItemMain}>{allowance.childName}</Text>
-                              <Text style={styles.childrenActivePill}>{allowance.isActive ? "Active" : "Paused"}</Text>
+                              <Text style={styles.childrenActivePill}>Active</Text>
                             </View>
                             <Text style={styles.childrenSummaryLabel}>{allowance.title}</Text>
                             <Text style={styles.childrenSummaryValue}>{formatMoney(allowance.amount)}</Text>
@@ -1914,35 +2335,29 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                               <Pressable
                                 style={styles.desktopSmallBtn}
                                 onPress={() => {
-                                  setEditingAllowanceId(allowance.id);
+                                  setEditingAllowanceId(null);
                                   setSelectedChildId(allowance.childId);
-                                  setAllowanceTitle(allowance.title);
-                                  setAllowanceAmount(String(allowance.amount));
-                                  setAllowanceDate(allowance.availableOn.slice(0, 10));
-                                  setAllowanceNotes(allowance.notes ?? "");
+                                  setAllowanceTitle("");
+                                  setAllowanceAmount("");
+                                  setAllowanceDate("");
+                                  setAllowanceNotes("");
                                   setAllowanceChildDropdownOpen(false);
                                   setShowAllowanceForm(true);
                                 }}
                               >
-                                <Text style={styles.desktopSmallBtnText}>View Details</Text>
+                                <Text style={styles.desktopSmallBtnText}>View Details / New Schedule</Text>
                               </Pressable>
-                              {allowance.isActive ? (
-                                <Pressable
-                                  style={styles.desktopSmallBtn}
-                                  onPress={() => handleDeleteAllowance(allowance.id)}
-                                >
-                                  <Text style={styles.desktopSmallBtnText}>Delete & Refund</Text>
-                                </Pressable>
-                              ) : (
-                                <Pressable style={styles.desktopSmallBtn} disabled>
-                                  <Text style={styles.desktopSmallBtnText}>Already Paid</Text>
-                                </Pressable>
-                              )}
+                              <Pressable
+                                style={styles.desktopSmallBtn}
+                                onPress={() => handleDeleteAllowance(allowance.id)}
+                              >
+                                <Text style={styles.desktopSmallBtnText}>Delete & Refund</Text>
+                              </Pressable>
                             </View>
                           </View>
                         ))}
                       </View>
-                      {allowances.length === 0 ? <Text style={styles.activityEmpty}>No allowances scheduled yet.</Text> : null}
+                      {scheduledAllowances.length === 0 ? <Text style={styles.activityEmpty}>No active allowances scheduled yet.</Text> : null}
                     </View>
 
                     <View style={styles.desktopPanel}>
@@ -2180,7 +2595,10 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                             <Text style={styles.txStatusText}>{chore.status === "completed" ? "Completed" : "Pending"}</Text>
                           </View>
                           <View style={styles.desktopPendingActions}>
-                            <Pressable style={styles.desktopSmallBtn}>
+                            <Pressable
+                              style={styles.desktopSmallBtn}
+                              onPress={() => setSelectedChoreForDetails(chore)}
+                            >
                               <Text style={styles.desktopSmallBtnText}>View</Text>
                             </Pressable>
                           </View>
@@ -2191,6 +2609,21 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                   </View>
 
                   <View style={styles.childrenSideCol}>
+                    {selectedChoreForDetails ? (
+                      <View style={styles.desktopPanel}>
+                        <View style={styles.desktopPanelHeader}>
+                          <Text style={styles.sectionTitle}>Chore Details</Text>
+                          <Pressable style={styles.desktopSmallBtn} onPress={() => setSelectedChoreForDetails(null)}>
+                            <Text style={styles.desktopSmallBtnText}>Close</Text>
+                          </Pressable>
+                        </View>
+                        <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Chore</Text><Text style={styles.listItemMain}>{selectedChoreForDetails.title}</Text></View>
+                        <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Child</Text><Text style={styles.listItemMain}>{selectedChoreForDetails.childName}</Text></View>
+                        <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Deadline</Text><Text style={styles.listItemMain}>{selectedChoreDeadlineLabel}</Text></View>
+                        <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Completed At</Text><Text style={styles.listItemMain}>{selectedChoreCompletionLabel}</Text></View>
+                        <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Deadline Status</Text><Text style={styles.listItemMain}>{selectedChoreDeadlineStatus}</Text></View>
+                      </View>
+                    ) : null}
                     {showAssignChoreForm ? (
                       <View style={styles.desktopPanel}>
                         <Text style={styles.sectionTitle}>Assign Chore</Text>
@@ -2234,13 +2667,6 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                       </View>
                     ) : null}
                     <View style={styles.desktopPanel}>
-                      <Text style={styles.sectionTitle}>Chore Summary</Text>
-                      <Text style={styles.childrenSummaryValue}>{chores.length}</Text>
-                      <Text style={styles.childrenSummaryLabel}>Total</Text>
-                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Pending</Text><Text style={styles.listItemMain}>{pendingChoresCount}</Text></View>
-                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Completed</Text><Text style={styles.listItemMain}>{completedChores}</Text></View>
-                    </View>
-                    <View style={styles.desktopPanel}>
                       <Text style={styles.sectionTitle}>Pending Approvals</Text>
                       {chores.filter((c) => c.status === "assigned").slice(0, 4).map((c) => (
                         <View key={c.id} style={styles.desktopSimpleRow}>
@@ -2248,18 +2674,6 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                           <Text style={styles.listItemMeta}>{c.childName}</Text>
                         </View>
                       ))}
-                    </View>
-                    <View style={styles.desktopPanel}>
-                      <Text style={styles.sectionTitle}>Recent Rewards Paid</Text>
-                      {approvedTransactions
-                        .filter((tx) => (tx.description ?? "").toLowerCase().includes("chore"))
-                        .slice(0, 4)
-                        .map((tx) => (
-                          <View key={tx.id} style={styles.desktopSimpleRow}>
-                            <Text style={styles.listItemMain}>{tx.childName}</Text>
-                            <Text style={styles.listItemMeta}>+ {formatMoney(tx.amount)}</Text>
-                          </View>
-                        ))}
                     </View>
                   </View>
                 </View>
@@ -2309,183 +2723,6 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
           </View>
         )}
 
-        {/* CHILD PROGRESS */}
-        {!loading && tab === "progress" && (
-          <View style={styles.section}>
-            {!isMobile ? (
-              <>
-                <View style={styles.goalsTopBar}>
-                  <View>
-                    <Text style={styles.pageTitle}>Child Progress</Text>
-                    <Text style={styles.childrenSubtitle}>Track your children's growth across savings, learning, and financial skills.</Text>
-                  </View>
-                  <View style={styles.childrenTopActions}>
-                    <View style={styles.childrenTopBtn}><Text style={styles.childrenTopBtnText}>May 1 - May 15, 2025</Text></View>
-                    <View style={styles.childrenTopBtn}><Text style={styles.childrenTopBtnText}>Export Report</Text></View>
-                  </View>
-                </View>
-
-                <View style={styles.desktopKpiGrid}>
-                  <View style={styles.desktopKpiCard}><Text style={styles.desktopKpiLabel}>Learning Progress</Text><Text style={styles.desktopKpiValue}>{Math.max(60, Math.min(95, lessons.length * 12))}%</Text></View>
-                  <View style={styles.desktopKpiCard}><Text style={styles.desktopKpiLabel}>Savings Progress</Text><Text style={styles.desktopKpiValue}>{avgGoalProgress}%</Text></View>
-                  <View style={styles.desktopKpiCard}><Text style={styles.desktopKpiLabel}>Budgeting Skills</Text><Text style={styles.desktopKpiValue}>{Math.max(55, Math.min(90, 60 + children.length * 4))}%</Text></View>
-                  <View style={styles.desktopKpiCard}><Text style={styles.desktopKpiLabel}>Chore Completion</Text><Text style={styles.desktopKpiValue}>{chores.length > 0 ? Math.round((completedChores / chores.length) * 100) : 0}%</Text></View>
-                  <View style={styles.desktopKpiCard}><Text style={styles.desktopKpiLabel}>Badges Earned</Text><Text style={styles.desktopKpiValue}>{children.length * 3 + lessons.length}</Text></View>
-                </View>
-
-                <View style={styles.childrenLayout}>
-                  <View style={styles.childrenMainCol}>
-                    <View style={styles.desktopPanel}>
-                      <Text style={styles.sectionTitle}>Progress Overview by Child</Text>
-                      {children.map((child) => {
-                        const childChores = chores.filter((c) => c.childId === child.id);
-                        const choresPct = childChores.length > 0 ? Math.round((childChores.filter((c) => c.status === "completed").length / childChores.length) * 100) : 0;
-                        const childGoals = allChildGoals.filter((g) => g.childId === child.id);
-                        const savingsPct = childGoals.length > 0
-                          ? Math.round(childGoals.reduce((sum, g) => sum + (g.targetAmount > 0 ? Math.min(100, (g.currentAmount / g.targetAmount) * 100) : 0), 0) / childGoals.length)
-                          : 0;
-                        const learningPct = Math.max(55, Math.min(92, 60 + (child.age % 5) * 6));
-                        const budgetingPct = Math.max(50, Math.min(88, 58 + (child.age % 4) * 5));
-                        const totalScore = Math.round((learningPct + savingsPct + budgetingPct + choresPct) / 4);
-                        return (
-                          <View key={child.id} style={styles.progressOverviewRow}>
-                            <View style={styles.progressOverviewChild}>
-                              <View style={styles.childAvatar}><Text style={styles.childAvatarText}>{getInitials(child.nickname)}</Text></View>
-                              <View><Text style={styles.listItemMain}>{child.nickname}</Text><Text style={styles.listItemMeta}>Age {child.age}</Text></View>
-                            </View>
-                            <View style={styles.progressMetricCircle}><Text style={styles.progressMetricText}>{learningPct}%</Text></View>
-                            <View style={styles.progressMetricCircle}><Text style={styles.progressMetricText}>{savingsPct}%</Text></View>
-                            <View style={styles.progressMetricCircle}><Text style={styles.progressMetricText}>{budgetingPct}%</Text></View>
-                            <View style={styles.progressMetricCircle}><Text style={styles.progressMetricText}>{choresPct}%</Text></View>
-                            <View style={styles.progressTotalWrap}><Text style={styles.childrenSummaryValue}>{totalScore}%</Text><Text style={styles.childrenSummaryLabel}>Total Score</Text></View>
-                          </View>
-                        );
-                      })}
-                    </View>
-
-                    <View style={styles.childrenBottomPanels}>
-                      <View style={styles.desktopPanel}>
-                        <Text style={styles.sectionTitle}>Detailed Progress Breakdown</Text>
-                        <View style={styles.transactionsTableHeader}>
-                          <Text style={styles.transactionsHeadCell}>Module</Text>
-                          <Text style={styles.transactionsHeadCell}>Amina</Text>
-                          <Text style={styles.transactionsHeadCell}>Daniel</Text>
-                          <Text style={styles.transactionsHeadCell}>Status</Text>
-                        </View>
-                        {["Saving Basics", "Needs vs Wants", "Budgeting", "Interest & Growth", "Fraud Awareness"].map((moduleName, index) => (
-                          <View key={moduleName} style={styles.transactionsRow}>
-                            <Text style={styles.transactionsCell}>{moduleName}</Text>
-                            <Text style={styles.transactionsCell}>{Math.max(50, 85 - index * 5)}%</Text>
-                            <Text style={styles.transactionsCell}>{Math.max(45, 75 - index * 4)}%</Text>
-                            <View style={[styles.txStatusPill, index % 2 === 0 ? styles.txApproved : styles.txPending]}>
-                              <Text style={styles.txStatusText}>{index % 2 === 0 ? "Completed" : "In Progress"}</Text>
-                            </View>
-                          </View>
-                        ))}
-                      </View>
-                      <View style={styles.desktopPanel}>
-                        <Text style={styles.sectionTitle}>Recent Achievements</Text>
-                        {approvedTransactions
-                          .filter((tx) => (tx.description ?? "").toLowerCase().includes("chore"))
-                          .slice(0, 4)
-                          .map((tx) => (
-                            <View key={tx.id} style={styles.desktopSimpleRow}>
-                              <Text style={styles.listItemMain}>{tx.childName}</Text>
-                              <Text style={styles.listItemMeta}>{tx.description ?? "Chore achievement"}</Text>
-                            </View>
-                          ))}
-                        <Text style={styles.desktopPanelLink}>View all achievements</Text>
-                      </View>
-                    </View>
-                  </View>
-
-                  <View style={styles.childrenSideCol}>
-                    <View style={styles.desktopPanel}>
-                      <Text style={styles.sectionTitle}>Child Comparison</Text>
-                      <Text style={styles.childrenSummaryLabel}>This month snapshot</Text>
-                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Learning</Text><Text style={styles.listItemMain}>75% vs 68%</Text></View>
-                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Savings</Text><Text style={styles.listItemMain}>70% vs 66%</Text></View>
-                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Budgeting</Text><Text style={styles.listItemMain}>68% vs 62%</Text></View>
-                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Chores</Text><Text style={styles.listItemMain}>82% vs 78%</Text></View>
-                    </View>
-                    <View style={styles.desktopPanel}>
-                      <Text style={styles.sectionTitle}>Badges Earned</Text>
-                      <View style={styles.badgesGrid}>
-                        {["Saver", "Helper", "Learner", "Consistent", "Budget Master", "Smart Spender"].map((badge) => (
-                          <View key={badge} style={styles.badgeItem}>
-                            <Text style={styles.badgeEmoji}>🏅</Text>
-                            <Text style={styles.childrenSummaryLabel}>{badge}</Text>
-                          </View>
-                        ))}
-                      </View>
-                    </View>
-                  </View>
-                </View>
-              </>
-            ) : (
-              <>
-                <Text style={[styles.pageTitle, isMobile && styles.mobilePageTitle]}>Child Progress</Text>
-                {children.length === 0 ? (
-                  <View style={[styles.activityCard, isMobile && styles.mobileSurfaceCard]}>
-                    <Text style={styles.activityEmpty}>No children added yet.</Text>
-                  </View>
-                ) : (
-                  children.map((child) => {
-                    const childChores = chores.filter((c) => c.childId === child.id);
-                    const completedChildChores = childChores.filter((c) => c.status === "completed").length;
-                    const totalChores = childChores.length;
-                    const choresPct = totalChores > 0 ? Math.round((completedChildChores / totalChores) * 100) : 0;
-                    const childAllowances = allowances.filter((a) => a.childId === child.id);
-                    const totalAllowanceValue = childAllowances.reduce((sum, a) => sum + a.amount, 0);
-
-                    return (
-                      <View key={child.id} style={[styles.progressCard, isMobile && styles.mobileSurfaceCard]}>
-                        <View style={styles.progressCardHeader}>
-                          <View style={styles.progressAvatar}>
-                            <Text style={styles.progressAvatarText}>{getInitials(child.nickname)}</Text>
-                          </View>
-                          <View style={styles.progressCardInfo}>
-                            <Text style={styles.progressChildName}>{child.nickname}</Text>
-                            <Text style={styles.progressChildAge}>Age {child.age}</Text>
-                          </View>
-                        </View>
-                        <View style={styles.progressStatRow}>
-                          <View style={styles.progressStat}>
-                            <Text style={styles.progressStatValue}>{formatMoney(child.wallet?.balance ?? 0)}</Text>
-                            <Text style={styles.progressStatLabel}>Balance</Text>
-                          </View>
-                          <View style={styles.progressStat}>
-                            <Text style={styles.progressStatValue}>{formatMoney(child.wallet?.totalEarned ?? 0)}</Text>
-                            <Text style={styles.progressStatLabel}>Total Earned</Text>
-                          </View>
-                          <View style={styles.progressStat}>
-                            <Text style={styles.progressStatValue}>{formatMoney(child.wallet?.totalSpent ?? 0)}</Text>
-                            <Text style={styles.progressStatLabel}>Total Spent</Text>
-                          </View>
-                        </View>
-                        <View style={styles.progressItem}>
-                          <View style={styles.progressItemHeader}>
-                            <Text style={styles.progressItemLabel}>Chore Completion</Text>
-                            <Text style={styles.progressItemPct}>{completedChildChores}/{totalChores} ({choresPct}%)</Text>
-                          </View>
-                          <View style={styles.progressTrack}>
-                            <View style={[styles.progressFill, { width: `${choresPct}%` as any }]} />
-                          </View>
-                        </View>
-                        <View style={styles.progressItem}>
-                          <Text style={styles.progressItemLabel}>
-                            Allowances Scheduled: {childAllowances.length} ({formatMoney(totalAllowanceValue)} total)
-                          </Text>
-                        </View>
-                      </View>
-                    );
-                  })
-                )}
-              </>
-            )}
-          </View>
-        )}
-
         {/* LEARNING CONTENT */}
         {!loading && tab === "learning" && (
           <View style={styles.section}>
@@ -2494,27 +2731,64 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
               Age-appropriate financial education modules for your children.
             </Text>
 
+            <View style={[styles.formCard, isMobile && styles.mobileSurfaceCard]}>
+              <Text style={styles.formCardTitle}>Assign To Child</Text>
+              <ChildSelector children={children} selectedId={selectedChildId} onSelect={setSelectedChildId} />
+              <AppDateInput label="Study Start Date" value={learningStudyStartDate} onChangeText={setLearningStudyStartDate} />
+              <AppDateInput label="Study End Date" value={learningStudyEndDate} onChangeText={setLearningStudyEndDate} />
+            </View>
+
+            <View style={[styles.formCard, isMobile && styles.mobileSurfaceCard]}>
+              <Text style={styles.formCardTitle}>Lesson Progress</Text>
+              {learningAssignments.length > 0 ? (
+                learningAssignments.map((assignment) => (
+                  <View key={assignment.assignmentId} style={styles.progressItem}>
+                    <View style={styles.progressItemHeader}>
+                      <Text style={styles.progressItemLabel}>{assignment.childName} • {assignment.lessonTitle}</Text>
+                      <Text style={styles.progressItemPct}>{assignment.progressPercent}%</Text>
+                    </View>
+                    <View style={styles.progressTrack}>
+                      <View style={[styles.progressFill, { width: `${assignment.progressPercent}%` as any }]} />
+                    </View>
+                    <Text style={styles.listItemMeta}>
+                      {assignment.status === "completed" ? "Finished" : assignment.progressPercent > 0 ? "In progress" : "Not started"}
+                      {assignment.lastViewedAt ? ` • Last viewed ${new Date(assignment.lastViewedAt).toLocaleDateString()}` : ""}
+                    </Text>
+                  </View>
+                ))
+              ) : (
+                <Text style={styles.listItemMeta}>Assigned lessons will show reading and video progress here.</Text>
+              )}
+            </View>
+
             {lessons.length > 0 ? (
               lessons.filter((l) => l.isPublished).map((lesson) => (
                 <View key={lesson.id} style={[styles.lessonCard, isMobile && styles.mobileSurfaceCard]}>
                   <Text style={styles.lessonTitle}>{lesson.title}</Text>
                   <Text style={styles.lessonContent} numberOfLines={4}>{lesson.content}</Text>
+                  {lesson.resourceUrl ? (
+                    <Text style={styles.listItemMeta}>
+                      {lesson.resourceType.toUpperCase()} material: {lesson.fileName ?? lesson.resourceUrl}
+                    </Text>
+                  ) : null}
+                  {lesson.resourceUrl ? (
+                    <View style={styles.desktopChildActions}>
+                      <Pressable style={styles.desktopSmallBtn} onPress={() => openLessonResource(lesson.resourceUrl!)}>
+                        <Text style={styles.desktopSmallBtnText}>View</Text>
+                      </Pressable>
+                      <Pressable style={[styles.desktopSmallBtn, styles.desktopSmallBtnPrimary]} onPress={() => openLessonResource(lesson.resourceUrl!)}>
+                        <Text style={[styles.desktopSmallBtnText, styles.desktopSmallBtnPrimaryText]}>Download</Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
+                  <AppButton
+                    title="Assign To Selected Child"
+                    loading={submitting}
+                    onPress={() => handleAssignLearningLesson(lesson.id)}
+                  />
                 </View>
               ))
             ) : null}
-
-            {STATIC_LESSONS.map((lesson) => (
-              <View key={lesson.id} style={[styles.lessonCard, isMobile && styles.mobileSurfaceCard]}>
-                <View style={styles.lessonHeader}>
-                  <Text style={styles.lessonIcon}>{lesson.icon}</Text>
-                  <View style={styles.lessonHeaderText}>
-                    <Text style={styles.lessonTitle}>{lesson.title}</Text>
-                    <Text style={styles.lessonTag}>{lesson.tag}</Text>
-                  </View>
-                </View>
-                <Text style={styles.lessonContent}>{lesson.content}</Text>
-              </View>
-            ))}
           </View>
         )}
 
@@ -2532,7 +2806,7 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                     <Pressable style={styles.childrenTopBtn}>
                       <Text style={styles.childrenTopBtnText}>Limit History</Text>
                     </Pressable>
-                    <Pressable style={[styles.childrenTopBtn, styles.childrenTopBtnPrimary]} onPress={() => setLimitsChildDropdownOpen((p) => !p)}>
+                    <Pressable style={[styles.childrenTopBtn, styles.childrenTopBtnPrimary]} onPress={() => handleOpenLimitForm()}>
                       <Text style={[styles.childrenTopBtnText, styles.childrenTopBtnTextPrimary]}>+ Set Limit</Text>
                     </Pressable>
                   </View>
@@ -2601,6 +2875,7 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                                     setSelectedChildId(child.id);
                                     setLimitAmount(limit > 0 ? String(limit) : "");
                                     if (child.activeSpendingLimitPeriod) setLimitPeriodType(child.activeSpendingLimitPeriod);
+                                    setShowLimitForm(true);
                                   }}
                                 >
                                   <Text style={[styles.desktopSmallBtnText, styles.desktopSmallBtnPrimaryText]}>Edit Limit</Text>
@@ -2612,65 +2887,9 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                       </View>
                     </View>
 
-                    <View style={styles.desktopPanel}>
-                      <Text style={styles.sectionTitle}>Update Spending Limit</Text>
-                      <View style={styles.dropdownWrap}>
-                        <Text style={styles.childSelectorLabel}>Select Child</Text>
-                        <Pressable style={styles.dropdownButton} onPress={() => setLimitsChildDropdownOpen((p) => !p)}>
-                          <Text style={styles.dropdownButtonText}>
-                            {children.find((c) => c.id === selectedChildId)?.nickname ?? "Choose a child"}
-                          </Text>
-                          <Text style={styles.dropdownChevron}>{limitsChildDropdownOpen ? "▲" : "▼"}</Text>
-                        </Pressable>
-                        {limitsChildDropdownOpen ? (
-                          <View style={styles.dropdownMenu}>
-                            {children.length === 0 ? (
-                              <Text style={styles.dropdownEmptyText}>No children found.</Text>
-                            ) : (
-                              children.map((child) => (
-                                <Pressable key={child.id} style={styles.dropdownItem}
-                                  onPress={() => { setSelectedChildId(child.id); setLimitsChildDropdownOpen(false); }}>
-                                  <Text style={styles.dropdownItemText}>{child.nickname}</Text>
-                                </Pressable>
-                              ))
-                            )}
-                          </View>
-                        ) : null}
-                      </View>
-                      <AppInput label="Limit Amount (UGX)" value={limitAmount} onChangeText={setLimitAmount} keyboardType="numeric" />
-                      <View style={styles.toggleRowGroup}>
-                        {(["weekly", "monthly", "quarterly"] as const).map((period) => (
-                          <Pressable
-                            key={period}
-                            style={[styles.chipBtn, limitPeriodType === period && styles.chipBtnActive]}
-                            onPress={() => setLimitPeriodType(period)}
-                          >
-                            <Text style={[styles.chipBtnText, limitPeriodType === period && styles.chipBtnTextActive]}>
-                              {period.charAt(0).toUpperCase() + period.slice(1)}
-                            </Text>
-                          </Pressable>
-                        ))}
-                      </View>
-                      <AppButton title="Update Limit" loading={submitting} onPress={handleSetLimit} />
-                    </View>
                   </View>
 
                   <View style={styles.childrenSideCol}>
-                    <View style={styles.desktopPanel}>
-                      <Text style={styles.sectionTitle}>Policy Controls</Text>
-                      <Pressable style={[styles.toggleRow, withdrawalApprovalRequired && styles.toggleRowActive]} onPress={() => setWithdrawalApprovalRequired((prev) => !prev)}>
-                        <Text style={styles.toggleTitle}>Require withdrawal approval</Text>
-                        <Text style={styles.toggleState}>{withdrawalApprovalRequired ? "ON" : "OFF"}</Text>
-                      </Pressable>
-                      <Pressable style={[styles.toggleRow, enableAccountFreeze && styles.toggleRowWarn]} onPress={() => setEnableAccountFreeze((prev) => !prev)}>
-                        <Text style={styles.toggleTitle}>Temporary account freeze</Text>
-                        <Text style={styles.toggleState}>{enableAccountFreeze ? "ACTIVE" : "INACTIVE"}</Text>
-                      </Pressable>
-                      <AppInput label="Merchant restrictions" value={merchantRestrictions} onChangeText={setMerchantRestrictions} placeholder="gambling, night clubs" />
-                      <AppInput label="Quiet hours" value={quietHours} onChangeText={setQuietHours} placeholder="21:00 - 06:00" />
-                      <AppButton title="Save Policies" loading={submitting} onPress={handleSavePreferences} />
-                    </View>
-
                     <View style={styles.desktopPanel}>
                       <Text style={styles.sectionTitle}>Limit Alerts</Text>
                       {children.slice(0, 4).map((child) => {
@@ -2692,7 +2911,26 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
               <>
                 <Text style={[styles.pageTitle, isMobile && styles.mobilePageTitle]}>Spending Limits</Text>
                 <View style={[styles.formCard, isMobile && styles.mobileSurfaceCard]}>
-                  <Text style={styles.formCardTitle}>Set Spending Limit</Text>
+                  <Text style={styles.formCardTitle}>Tap Set Limit to add or update a child limit.</Text>
+                </View>
+              </>
+            )}
+
+            {showLimitForm ? (
+              <View style={styles.modalOverlay}>
+                <View style={[styles.modalCard, isMobile && styles.mobileSurfaceCard]}>
+                  <View style={styles.modalHead}>
+                    <Text style={styles.formCardTitle}>Set Spending Limit</Text>
+                    <Pressable
+                      style={styles.modalCloseBtn}
+                      onPress={() => {
+                        setShowLimitForm(false);
+                        setLimitsChildDropdownOpen(false);
+                      }}
+                    >
+                      <Text style={styles.modalCloseText}>Close</Text>
+                    </Pressable>
+                  </View>
                   <View style={styles.dropdownWrap}>
                     <Text style={styles.childSelectorLabel}>Select Child</Text>
                     <Pressable style={styles.dropdownButton} onPress={() => setLimitsChildDropdownOpen((p) => !p)}>
@@ -2707,8 +2945,14 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                           <Text style={styles.dropdownEmptyText}>No children found.</Text>
                         ) : (
                           children.map((child) => (
-                            <Pressable key={child.id} style={styles.dropdownItem}
-                              onPress={() => { setSelectedChildId(child.id); setLimitsChildDropdownOpen(false); }}>
+                            <Pressable
+                              key={child.id}
+                              style={styles.dropdownItem}
+                              onPress={() => {
+                                setSelectedChildId(child.id);
+                                setLimitsChildDropdownOpen(false);
+                              }}
+                            >
                               <Text style={styles.dropdownItemText}>{child.nickname}</Text>
                             </Pressable>
                           ))
@@ -2732,22 +2976,8 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                   </View>
                   <AppButton title="Update Limit" loading={submitting} onPress={handleSetLimit} />
                 </View>
-                <View style={[styles.formCard, isMobile && styles.mobileSurfaceCard]}>
-                  <Text style={styles.formCardTitle}>Parental Controls</Text>
-                  <Pressable style={[styles.toggleRow, withdrawalApprovalRequired && styles.toggleRowActive]} onPress={() => setWithdrawalApprovalRequired((prev) => !prev)}>
-                    <Text style={styles.toggleTitle}>Require approval for withdrawals</Text>
-                    <Text style={styles.toggleState}>{withdrawalApprovalRequired ? "ON" : "OFF"}</Text>
-                  </Pressable>
-                  <Pressable style={[styles.toggleRow, enableAccountFreeze && styles.toggleRowWarn]} onPress={() => setEnableAccountFreeze((prev) => !prev)}>
-                    <Text style={styles.toggleTitle}>Temporary account freeze</Text>
-                    <Text style={styles.toggleState}>{enableAccountFreeze ? "ACTIVE" : "INACTIVE"}</Text>
-                  </Pressable>
-                  <AppInput label="Merchant restrictions (comma separated)" value={merchantRestrictions} onChangeText={setMerchantRestrictions} placeholder="gambling, night clubs" />
-                  <AppInput label="Quiet hours" value={quietHours} onChangeText={setQuietHours} placeholder="21:00 - 06:00" />
-                  <AppButton title="Save Parental Controls" loading={submitting} onPress={handleSavePreferences} />
-                </View>
-              </>
-            )}
+              </View>
+            ) : null}
           </View>
         )}
 
@@ -2762,7 +2992,7 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                     <Text style={styles.childrenSubtitle}>Stay updated with important alerts and activities.</Text>
                   </View>
                   <View style={styles.childrenTopActions}>
-                    <Pressable style={styles.childrenTopBtn}>
+                    <Pressable style={styles.childrenTopBtn} onPress={handleMarkAllNotificationsRead}>
                       <Text style={styles.childrenTopBtnText}>Mark all as read</Text>
                     </Pressable>
                   </View>
@@ -2781,38 +3011,29 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                         <Text style={styles.activityEmpty}>No alerts yet.</Text>
                       ) : (
                         notifications.slice(0, 12).map((item) => (
-                          <View key={item.id} style={styles.notificationRow}>
-                            <View style={styles.notificationDot} />
+                          <Pressable
+                            key={item.id}
+                            style={[styles.notificationRow, !item.isRead && styles.notificationRowUnread]}
+                            onPress={() => {
+                              if (!item.isRead) void handleMarkNotificationRead(item.id);
+                            }}
+                          >
+                            <View style={[styles.notificationDot, item.isRead && styles.notificationDotRead]} />
                             <View style={styles.notificationContent}>
                               <Text style={styles.listItemMain}>{item.message}</Text>
                               <Text style={styles.listItemMeta}>{item.type.replace(/_/g, " ")}</Text>
                             </View>
                             <Text style={styles.listItemMeta}>{new Date(item.createdAt).toLocaleDateString()}</Text>
-                          </View>
+                          </Pressable>
                         ))
                       )}
                     </View>
                   </View>
                   <View style={styles.childrenSideCol}>
                     <View style={styles.desktopPanel}>
-                      <Text style={styles.sectionTitle}>Notification Settings</Text>
-                      <Pressable style={[styles.toggleRow, notifyDeposits && styles.toggleRowActive]} onPress={() => setNotifyDeposits((prev) => !prev)}>
-                        <Text style={styles.toggleTitle}>Allowance Alerts</Text>
-                        <Text style={styles.toggleState}>{notifyDeposits ? "ON" : "OFF"}</Text>
-                      </Pressable>
-                      <Pressable style={[styles.toggleRow, notifyWithdrawals && styles.toggleRowActive]} onPress={() => setNotifyWithdrawals((prev) => !prev)}>
-                        <Text style={styles.toggleTitle}>Chore Alerts</Text>
-                        <Text style={styles.toggleState}>{notifyWithdrawals ? "ON" : "OFF"}</Text>
-                      </Pressable>
-                      <Pressable style={[styles.toggleRow, notifySuspiciousLogins && styles.toggleRowActive]} onPress={() => setNotifySuspiciousLogins((prev) => !prev)}>
-                        <Text style={styles.toggleTitle}>Spending Alerts</Text>
-                        <Text style={styles.toggleState}>{notifySuspiciousLogins ? "ON" : "OFF"}</Text>
-                      </Pressable>
-                      <Pressable style={[styles.toggleRow, notifyGoals && styles.toggleRowActive]} onPress={() => setNotifyGoals((prev) => !prev)}>
-                        <Text style={styles.toggleTitle}>Goal Updates</Text>
-                        <Text style={styles.toggleState}>{notifyGoals ? "ON" : "OFF"}</Text>
-                      </Pressable>
-                      <AppButton title="Save Notification Preferences" loading={submitting} onPress={handleSavePreferences} />
+                      <Text style={styles.sectionTitle}>Unread Summary</Text>
+                      <Text style={styles.childrenSummaryValue}>{unreadNotificationCount}</Text>
+                      <Text style={styles.childrenSummaryLabel}>Unread notifications</Text>
                     </View>
                   </View>
                 </View>
@@ -2821,24 +3042,30 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
               <>
                 <Text style={[styles.pageTitle, isMobile && styles.mobilePageTitle]}>Notifications</Text>
                 <View style={[styles.formCard, isMobile && styles.mobileSurfaceCard]}>
-                  <Text style={styles.formCardTitle}>Alert Preferences</Text>
-                  <Pressable style={[styles.toggleRow, notifyDeposits && styles.toggleRowActive]} onPress={() => setNotifyDeposits((prev) => !prev)}>
-                    <Text style={styles.toggleTitle}>Deposit alerts</Text>
-                    <Text style={styles.toggleState}>{notifyDeposits ? "ON" : "OFF"}</Text>
-                  </Pressable>
-                  <Pressable style={[styles.toggleRow, notifyWithdrawals && styles.toggleRowActive]} onPress={() => setNotifyWithdrawals((prev) => !prev)}>
-                    <Text style={styles.toggleTitle}>Withdrawal requests and approvals</Text>
-                    <Text style={styles.toggleState}>{notifyWithdrawals ? "ON" : "OFF"}</Text>
-                  </Pressable>
-                  <Pressable style={[styles.toggleRow, notifySuspiciousLogins && styles.toggleRowActive]} onPress={() => setNotifySuspiciousLogins((prev) => !prev)}>
-                    <Text style={styles.toggleTitle}>Suspicious login attempts</Text>
-                    <Text style={styles.toggleState}>{notifySuspiciousLogins ? "ON" : "OFF"}</Text>
-                  </Pressable>
-                  <Pressable style={[styles.toggleRow, notifyGoals && styles.toggleRowActive]} onPress={() => setNotifyGoals((prev) => !prev)}>
-                    <Text style={styles.toggleTitle}>Savings milestones and goals</Text>
-                    <Text style={styles.toggleState}>{notifyGoals ? "ON" : "OFF"}</Text>
-                  </Pressable>
-                  <AppButton title="Save Notification Preferences" loading={submitting} onPress={handleSavePreferences} />
+                  <Text style={styles.formCardTitle}>Unread notifications: {unreadNotificationCount}</Text>
+                  <AppButton title="Mark all as read" loading={submitting} onPress={handleMarkAllNotificationsRead} />
+                </View>
+                <View style={[styles.formCard, isMobile && styles.mobileSurfaceCard]}>
+                  {notifications.length === 0 ? (
+                    <Text style={styles.activityEmpty}>No alerts yet.</Text>
+                  ) : (
+                    notifications.slice(0, 12).map((item) => (
+                      <Pressable
+                        key={item.id}
+                        style={[styles.notificationRow, !item.isRead && styles.notificationRowUnread]}
+                        onPress={() => {
+                          if (!item.isRead) void handleMarkNotificationRead(item.id);
+                        }}
+                      >
+                        <View style={[styles.notificationDot, item.isRead && styles.notificationDotRead]} />
+                        <View style={styles.notificationContent}>
+                          <Text style={styles.listItemMain}>{item.message}</Text>
+                          <Text style={styles.listItemMeta}>{item.type.replace(/_/g, " ")}</Text>
+                        </View>
+                        <Text style={styles.listItemMeta}>{new Date(item.createdAt).toLocaleDateString()}</Text>
+                      </Pressable>
+                    ))
+                  )}
                 </View>
               </>
             )}
@@ -2856,51 +3083,101 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                     <Text style={styles.childrenSubtitle}>View insights and activity reports across all accounts.</Text>
                   </View>
                   <View style={styles.childrenTopActions}>
-                    <View style={styles.childrenTopBtn}><Text style={styles.childrenTopBtnText}>This Month</Text></View>
+                    <Pressable
+                      style={[styles.childrenTopBtn, reportRange === "this_month" && styles.childrenTopBtnPrimary]}
+                      onPress={() => setReportRange("this_month")}
+                    >
+                      <Text style={[styles.childrenTopBtnText, reportRange === "this_month" && styles.childrenTopBtnTextPrimary]}>This Month</Text>
+                    </Pressable>
+                    <Pressable
+                      style={[styles.childrenTopBtn, reportRange === "last_30_days" && styles.childrenTopBtnPrimary]}
+                      onPress={() => setReportRange("last_30_days")}
+                    >
+                      <Text style={[styles.childrenTopBtnText, reportRange === "last_30_days" && styles.childrenTopBtnTextPrimary]}>Last 30 Days</Text>
+                    </Pressable>
+                    <Pressable
+                      style={[styles.childrenTopBtn, reportRange === "all_time" && styles.childrenTopBtnPrimary]}
+                      onPress={() => setReportRange("all_time")}
+                    >
+                      <Text style={[styles.childrenTopBtnText, reportRange === "all_time" && styles.childrenTopBtnTextPrimary]}>All Time</Text>
+                    </Pressable>
                   </View>
                 </View>
                 <View style={styles.desktopKpiGrid}>
-                  <View style={styles.desktopKpiCard}><Text style={styles.desktopKpiLabel}>Total Income</Text><Text style={styles.desktopKpiValue}>{formatMoney(reportSummary.totalEarned)}</Text></View>
-                  <View style={styles.desktopKpiCard}><Text style={styles.desktopKpiLabel}>Total Spending</Text><Text style={styles.desktopKpiValue}>{formatMoney(reportSummary.totalSpent)}</Text></View>
-                  <View style={styles.desktopKpiCard}><Text style={styles.desktopKpiLabel}>Total Savings</Text><Text style={styles.desktopKpiValue}>{formatMoney(totalChildBalance)}</Text></View>
-                  <View style={styles.desktopKpiCard}><Text style={styles.desktopKpiLabel}>Total Allowances</Text><Text style={styles.desktopKpiValue}>{formatMoney(totalAllowancesValue)}</Text></View>
+                  <View style={styles.desktopKpiCard}><Text style={styles.desktopKpiLabel}>Parent Balance</Text><Text style={styles.desktopKpiValue}>{formatMoney(reportSummary.parent.currentBalance)}</Text></View>
+                  <View style={styles.desktopKpiCard}><Text style={styles.desktopKpiLabel}>Total Deposited</Text><Text style={styles.desktopKpiValue}>{formatMoney(reportSummary.parent.totalDeposited)}</Text></View>
+                  <View style={styles.desktopKpiCard}><Text style={styles.desktopKpiLabel}>Children Wallets</Text><Text style={styles.desktopKpiValue}>{formatMoney(reportSummary.children.walletBalance)}</Text></View>
+                  <View style={styles.desktopKpiCard}><Text style={styles.desktopKpiLabel}>Sent to Children</Text><Text style={styles.desktopKpiValue}>{formatMoney(reportSummary.parent.totalSentToChildren)}</Text></View>
                 </View>
                 <View style={styles.childrenLayout}>
                   <View style={styles.childrenMainCol}>
                     <View style={styles.desktopPanel}>
-                      <Text style={styles.sectionTitle}>Spending Overview</Text>
-                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Shopping</Text><Text style={styles.listItemMain}>{formatMoney(Math.round(reportSummary.totalSpent * 0.37))}</Text></View>
-                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Food & Drinks</Text><Text style={styles.listItemMain}>{formatMoney(Math.round(reportSummary.totalSpent * 0.29))}</Text></View>
-                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Education</Text><Text style={styles.listItemMain}>{formatMoney(Math.round(reportSummary.totalSpent * 0.2))}</Text></View>
-                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Others</Text><Text style={styles.listItemMain}>{formatMoney(Math.round(reportSummary.totalSpent * 0.14))}</Text></View>
+                      <Text style={styles.sectionTitle}>Parent Account Summary</Text>
+                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Current balance</Text><Text style={styles.listItemMain}>{formatMoney(reportSummary.parent.currentBalance)}</Text></View>
+                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Deposit transactions</Text><Text style={styles.listItemMain}>{reportSummary.parent.depositTransactions}</Text></View>
+                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Reserved for active allowances</Text><Text style={styles.listItemMain}>{formatMoney(reportSummary.parent.reservedForActiveAllowances)}</Text></View>
+                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Total sent to children</Text><Text style={styles.listItemMain}>{formatMoney(reportSummary.parent.totalSentToChildren)}</Text></View>
                     </View>
                     <View style={styles.desktopPanel}>
-                      <Text style={styles.sectionTitle}>Recent Reports</Text>
-                      {[
-                        "Monthly Summary - May 2025",
-                        "Allowance Report",
-                        "Spending by Category",
-                        "Chores & Rewards Report",
-                      ].map((item) => (
-                        <View key={item} style={styles.desktopSimpleRow}>
-                          <Text style={styles.listItemMain}>{item}</Text>
-                          <Text style={styles.desktopPanelLink}>View</Text>
-                        </View>
-                      ))}
+                      <Text style={styles.sectionTitle}>Children Account Summary</Text>
+                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Children accounts</Text><Text style={styles.listItemMain}>{reportSummary.children.childCount}</Text></View>
+                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Approved transactions</Text><Text style={styles.listItemMain}>{reportSummary.children.approvedCount}</Text></View>
+                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Pending approvals</Text><Text style={styles.listItemMain}>{reportSummary.children.pendingCount}</Text></View>
+                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Total children spending</Text><Text style={styles.listItemMain}>{formatMoney(reportSummary.children.totalSpent)}</Text></View>
                     </View>
                   </View>
                   <View style={styles.childrenSideCol}>
                     <View style={styles.desktopPanel}>
-                      <Text style={styles.sectionTitle}>Top Categories</Text>
-                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Shopping</Text><Text style={styles.listItemMain}>{formatMoney(Math.round(reportSummary.totalSpent * 0.37))}</Text></View>
-                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Food & Drinks</Text><Text style={styles.listItemMain}>{formatMoney(Math.round(reportSummary.totalSpent * 0.29))}</Text></View>
-                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Entertainment</Text><Text style={styles.listItemMain}>{formatMoney(Math.round(reportSummary.totalSpent * 0.08))}</Text></View>
+                      <Text style={styles.sectionTitle}>Children Progress</Text>
+                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Goals completed</Text><Text style={styles.listItemMain}>{reportSummary.children.goalsCompleted}</Text></View>
+                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Chores completed</Text><Text style={styles.listItemMain}>{reportSummary.children.choresCompleted}</Text></View>
+                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Lifetime earned</Text><Text style={styles.listItemMain}>{formatMoney(reportSummary.children.lifetimeEarned)}</Text></View>
+                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Lifetime spent</Text><Text style={styles.listItemMain}>{formatMoney(reportSummary.children.lifetimeSpent)}</Text></View>
                     </View>
                     <View style={styles.desktopPanel}>
-                      <Text style={styles.sectionTitle}>Quick Actions</Text>
-                      <View style={styles.childrenQuickItem}><Text style={styles.childrenQuickText}>Export to PDF</Text></View>
-                      <View style={styles.childrenQuickItem}><Text style={styles.childrenQuickText}>Export to Excel</Text></View>
-                      <View style={styles.childrenQuickItem}><Text style={styles.childrenQuickText}>Print Report</Text></View>
+                      <Text style={styles.sectionTitle}>Report Notes</Text>
+                      <Text style={styles.listItemMeta}>Values are aggregated from your parent wallet, child wallets, transactions, goals, chores, and deposits.</Text>
+                      <Text style={styles.listItemMeta}>Use this page for a quick health check of both parent and child finances.</Text>
+                    </View>
+                    <View style={styles.desktopPanel}>
+                      <Text style={styles.sectionTitle}>Available Report Data & Downloads</Text>
+                      <Text style={styles.listItemMeta}>All datasets below are sourced from your database records for the selected range.</Text>
+                      <View style={styles.goalsLegendItem}>
+                        <Text style={styles.childrenSummaryLabel}>Parent account summary</Text>
+                        <Pressable style={styles.childrenTopBtn} onPress={() => handleDownloadReport("parent-summary")}><Text style={styles.childrenTopBtnText}>Download CSV</Text></Pressable>
+                      </View>
+                      <View style={styles.goalsLegendItem}>
+                        <Text style={styles.childrenSummaryLabel}>Children overview ({children.length} records)</Text>
+                        <Pressable style={styles.childrenTopBtn} onPress={() => handleDownloadReport("children-overview")}><Text style={styles.childrenTopBtnText}>Download CSV</Text></Pressable>
+                      </View>
+                      <View style={styles.goalsLegendItem}>
+                        <Text style={styles.childrenSummaryLabel}>Transactions ({allTransactions.length} records)</Text>
+                        <Pressable style={styles.childrenTopBtn} onPress={() => handleDownloadReport("transactions")}><Text style={styles.childrenTopBtnText}>Download CSV</Text></Pressable>
+                      </View>
+                      <View style={styles.goalsLegendItem}>
+                        <Text style={styles.childrenSummaryLabel}>Savings goals ({allChildGoals.length} records)</Text>
+                        <Pressable style={styles.childrenTopBtn} onPress={() => handleDownloadReport("goals")}><Text style={styles.childrenTopBtnText}>Download CSV</Text></Pressable>
+                      </View>
+                      <View style={styles.goalsLegendItem}>
+                        <Text style={styles.childrenSummaryLabel}>Chores ({chores.length} records)</Text>
+                        <Pressable style={styles.childrenTopBtn} onPress={() => handleDownloadReport("chores")}><Text style={styles.childrenTopBtnText}>Download CSV</Text></Pressable>
+                      </View>
+                      <View style={styles.goalsLegendItem}>
+                        <Text style={styles.childrenSummaryLabel}>Allowances ({allowances.length} records)</Text>
+                        <Pressable style={styles.childrenTopBtn} onPress={() => handleDownloadReport("allowances")}><Text style={styles.childrenTopBtnText}>Download CSV</Text></Pressable>
+                      </View>
+                      <View style={styles.goalsLegendItem}>
+                        <Text style={styles.childrenSummaryLabel}>Learning assignments ({learningAssignments.length} records)</Text>
+                        <Pressable style={styles.childrenTopBtn} onPress={() => handleDownloadReport("learning")}><Text style={styles.childrenTopBtnText}>Download CSV</Text></Pressable>
+                      </View>
+                      <View style={styles.goalsLegendItem}>
+                        <Text style={styles.childrenSummaryLabel}>Support tickets ({supportTickets.length} records)</Text>
+                        <Pressable style={styles.childrenTopBtn} onPress={() => handleDownloadReport("support")}><Text style={styles.childrenTopBtnText}>Download CSV</Text></Pressable>
+                      </View>
+                      <View style={styles.goalsLegendItem}>
+                        <Text style={styles.childrenSummaryLabel}>Combined export (summary + key datasets)</Text>
+                        <Pressable style={[styles.childrenTopBtn, styles.childrenTopBtnPrimary]} onPress={() => handleDownloadReport("full-export")}><Text style={[styles.childrenTopBtnText, styles.childrenTopBtnTextPrimary]}>Download Full CSV</Text></Pressable>
+                      </View>
                     </View>
                   </View>
                 </View>
@@ -2908,18 +3185,62 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
             ) : (
               <>
                 <Text style={[styles.pageTitle, isMobile && styles.mobilePageTitle]}>Reports & Analytics</Text>
+                <View style={[styles.formCard, isMobile && styles.mobileSurfaceCard]}>
+                  <Text style={styles.formCardTitle}>Report Range</Text>
+                  <View style={styles.toggleRowGroup}>
+                    <Pressable
+                      style={[styles.chipBtn, reportRange === "this_month" && styles.chipBtnActive]}
+                      onPress={() => setReportRange("this_month")}
+                    >
+                      <Text style={[styles.chipBtnText, reportRange === "this_month" && styles.chipBtnTextActive]}>This Month</Text>
+                    </Pressable>
+                    <Pressable
+                      style={[styles.chipBtn, reportRange === "last_30_days" && styles.chipBtnActive]}
+                      onPress={() => setReportRange("last_30_days")}
+                    >
+                      <Text style={[styles.chipBtnText, reportRange === "last_30_days" && styles.chipBtnTextActive]}>Last 30 Days</Text>
+                    </Pressable>
+                    <Pressable
+                      style={[styles.chipBtn, reportRange === "all_time" && styles.chipBtnActive]}
+                      onPress={() => setReportRange("all_time")}
+                    >
+                      <Text style={[styles.chipBtnText, reportRange === "all_time" && styles.chipBtnTextActive]}>All Time</Text>
+                    </Pressable>
+                  </View>
+                </View>
                 <View style={styles.statRow}>
                   <View style={[styles.statCard, isMobile && styles.statCardMobile]}>
-                    <Text style={styles.statLabel}>Approved transactions: {reportSummary.approvedCount}</Text>
+                    <Text style={styles.statLabel}>Parent balance: {formatMoney(reportSummary.parent.currentBalance)}</Text>
                   </View>
                   <View style={[styles.statCard, isMobile && styles.statCardMobile]}>
-                    <Text style={styles.statLabel}>Pending approvals: {reportSummary.pendingCount}</Text>
+                    <Text style={styles.statLabel}>Total deposited: {formatMoney(reportSummary.parent.totalDeposited)}</Text>
                   </View>
                   <View style={[styles.statCard, isMobile && styles.statCardMobile]}>
-                    <Text style={styles.statLabel}>Total spent: {formatMoney(reportSummary.totalSpent)}</Text>
+                    <Text style={styles.statLabel}>Children wallet balance: {formatMoney(reportSummary.children.walletBalance)}</Text>
                   </View>
                   <View style={[styles.statCard, isMobile && styles.statCardMobile]}>
-                    <Text style={styles.statLabel}>Total earned: {formatMoney(reportSummary.totalEarned)}</Text>
+                    <Text style={styles.statLabel}>Children pending approvals: {reportSummary.children.pendingCount}</Text>
+                  </View>
+                  <View style={[styles.statCard, isMobile && styles.statCardMobile]}>
+                    <Text style={styles.statLabel}>Children total spent: {formatMoney(reportSummary.children.totalSpent)}</Text>
+                  </View>
+                  <View style={[styles.statCard, isMobile && styles.statCardMobile]}>
+                    <Text style={styles.statLabel}>Goals completed: {reportSummary.children.goalsCompleted}</Text>
+                  </View>
+                </View>
+                <View style={[styles.formCard, isMobile && styles.mobileSurfaceCard]}>
+                  <Text style={styles.formCardTitle}>Available Report Data</Text>
+                  <Text style={styles.helperText}>Download report datasets as CSV files.</Text>
+                  <View style={styles.toggleRowGroup}>
+                    <Pressable style={styles.chipBtn} onPress={() => handleDownloadReport("parent-summary")}><Text style={styles.chipBtnText}>Parent Summary</Text></Pressable>
+                    <Pressable style={styles.chipBtn} onPress={() => handleDownloadReport("children-overview")}><Text style={styles.chipBtnText}>Children</Text></Pressable>
+                    <Pressable style={styles.chipBtn} onPress={() => handleDownloadReport("transactions")}><Text style={styles.chipBtnText}>Transactions</Text></Pressable>
+                    <Pressable style={styles.chipBtn} onPress={() => handleDownloadReport("goals")}><Text style={styles.chipBtnText}>Goals</Text></Pressable>
+                    <Pressable style={styles.chipBtn} onPress={() => handleDownloadReport("chores")}><Text style={styles.chipBtnText}>Chores</Text></Pressable>
+                    <Pressable style={styles.chipBtn} onPress={() => handleDownloadReport("allowances")}><Text style={styles.chipBtnText}>Allowances</Text></Pressable>
+                    <Pressable style={styles.chipBtn} onPress={() => handleDownloadReport("learning")}><Text style={styles.chipBtnText}>Learning</Text></Pressable>
+                    <Pressable style={styles.chipBtn} onPress={() => handleDownloadReport("support")}><Text style={styles.chipBtnText}>Support</Text></Pressable>
+                    <Pressable style={[styles.chipBtn, styles.chipBtnActive]} onPress={() => handleDownloadReport("full-export")}><Text style={[styles.chipBtnText, styles.chipBtnTextActive]}>Full Export</Text></Pressable>
                   </View>
                 </View>
               </>
@@ -2982,7 +3303,7 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
               <>
                 <View>
                   <Text style={styles.pageTitle}>Settings</Text>
-                  <Text style={styles.childrenSubtitle}>Manage your account, preferences, and security settings.</Text>
+                  <Text style={styles.childrenSubtitle}>Manage account settings and passwords for your family.</Text>
                 </View>
                 <View style={styles.childrenLayout}>
                   <View style={styles.childrenMainCol}>
@@ -2998,45 +3319,30 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                         <AppButton title="Save Account" loading={submitting} onPress={handleUpdateAccount} />
                       </View>
                       <View style={styles.desktopPanel}>
-                        <Text style={styles.sectionTitle}>Security</Text>
+                        <Text style={styles.sectionTitle}>Parent Password</Text>
                         <AppInput label="Current Password" value={currentPassword} onChangeText={setCurrentPassword} secureTextEntry />
                         <AppInput label="New Password" value={newPassword} onChangeText={setNewPassword} secureTextEntry />
                         <AppInput label="Confirm Password" value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry />
                         <AppButton title="Update Password" loading={submitting} onPress={handleChangePassword} />
-                        <Pressable style={[styles.toggleRow, notifySuspiciousLogins && styles.toggleRowActive]} onPress={() => setNotifySuspiciousLogins((prev) => !prev)}>
-                          <Text style={styles.toggleTitle}>Login Alerts</Text>
-                          <Text style={styles.toggleState}>{notifySuspiciousLogins ? "ON" : "OFF"}</Text>
-                        </Pressable>
-                      </View>
-                    </View>
-                    <View style={styles.settingsGrid}>
-                      <View style={styles.desktopPanel}>
-                        <Text style={styles.sectionTitle}>Preferences</Text>
-                        <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Currency</Text><Text style={styles.listItemMain}>UGX</Text></View>
-                        <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Language</Text><Text style={styles.listItemMain}>English</Text></View>
-                        <Pressable style={[styles.toggleRow, notifyDeposits && styles.toggleRowActive]} onPress={() => setNotifyDeposits((prev) => !prev)}>
-                          <Text style={styles.toggleTitle}>Weekly Summary Emails</Text>
-                          <Text style={styles.toggleState}>{notifyDeposits ? "ON" : "OFF"}</Text>
-                        </Pressable>
-                        <Pressable style={[styles.toggleRow, notifyGoals && styles.toggleRowActive]} onPress={() => setNotifyGoals((prev) => !prev)}>
-                          <Text style={styles.toggleTitle}>Marketing Emails</Text>
-                          <Text style={styles.toggleState}>{notifyGoals ? "ON" : "OFF"}</Text>
-                        </Pressable>
                       </View>
                       <View style={styles.desktopPanel}>
-                        <Text style={styles.sectionTitle}>Family & Children</Text>
-                        <View style={styles.childrenQuickItem}><Text style={styles.childrenQuickText}>Manage Children</Text></View>
-                        <View style={styles.childrenQuickItem}><Text style={styles.childrenQuickText}>Default Allowance Day</Text></View>
-                        <View style={styles.childrenQuickItem}><Text style={styles.childrenQuickText}>Approval Settings</Text></View>
-                        <Text style={styles.sectionTitle}>Data & Privacy</Text>
-                        <View style={styles.childrenQuickItem}><Text style={styles.childrenQuickText}>Download My Data</Text></View>
-                        <View style={styles.childrenQuickItem}><Text style={styles.childrenQuickText}>Delete Account</Text></View>
+                        <Text style={styles.sectionTitle}>Child Password</Text>
+                        <Text style={styles.listItemMeta}>Choose a child and set a new password.</Text>
+                        <ChildSelector children={children} selectedId={passwordChildId} onSelect={setPasswordChildId} />
+                        <AppInput
+                          label="New Child Password"
+                          value={childNewPassword}
+                          onChangeText={setChildNewPassword}
+                          secureTextEntry
+                        />
+                        <AppInput
+                          label="Confirm Child Password"
+                          value={childConfirmPassword}
+                          onChangeText={setChildConfirmPassword}
+                          secureTextEntry
+                        />
+                        <AppButton title="Update Child Password" loading={submitting} onPress={handleChangeChildPassword} />
                       </View>
-                    </View>
-                    <View style={styles.desktopPanel}>
-                      <Text style={styles.sectionTitle}>Need Help?</Text>
-                      <Text style={styles.listItemMeta}>Contact support for account assistance and security requests.</Text>
-                      <AppButton title="Contact Support" onPress={() => handleTabPress("support")} />
                     </View>
                   </View>
                 </View>
@@ -3045,7 +3351,7 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
               <>
                 <Text style={[styles.pageTitle, isMobile && styles.mobilePageTitle]}>Settings</Text>
                 <View style={[styles.formCard, isMobile && styles.mobileSurfaceCard]}>
-                  <Text style={styles.formCardTitle}>Account Information</Text>
+                  <Text style={styles.formCardTitle}>Account Settings</Text>
                   <AppInput label="Full Name" value={accountFullName} onChangeText={setAccountFullName} />
                   <AppInput label="NIN" value={accountNin} onChangeText={setAccountNin} autoCapitalize="characters" />
                   <AppInput label="Phone Number" value={accountPhone} onChangeText={setAccountPhone} keyboardType="phone-pad" />
@@ -3054,11 +3360,29 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                 </View>
 
                 <View style={[styles.formCard, isMobile && styles.mobileSurfaceCard]}>
-                  <Text style={styles.formCardTitle}>Change Password</Text>
+                  <Text style={styles.formCardTitle}>Parent Password</Text>
                   <AppInput label="Current Password" value={currentPassword} onChangeText={setCurrentPassword} secureTextEntry />
                   <AppInput label="New Password" value={newPassword} onChangeText={setNewPassword} secureTextEntry />
                   <AppInput label="Confirm Password" value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry />
                   <AppButton title="Update Password" loading={submitting} onPress={handleChangePassword} />
+                </View>
+
+                <View style={[styles.formCard, isMobile && styles.mobileSurfaceCard]}>
+                  <Text style={styles.formCardTitle}>Child Password</Text>
+                  <ChildSelector children={children} selectedId={passwordChildId} onSelect={setPasswordChildId} />
+                  <AppInput
+                    label="New Child Password"
+                    value={childNewPassword}
+                    onChangeText={setChildNewPassword}
+                    secureTextEntry
+                  />
+                  <AppInput
+                    label="Confirm Child Password"
+                    value={childConfirmPassword}
+                    onChangeText={setChildConfirmPassword}
+                    secureTextEntry
+                  />
+                  <AppButton title="Update Child Password" loading={submitting} onPress={handleChangeChildPassword} />
                 </View>
               </>
             )}
@@ -3921,11 +4245,17 @@ const styles = StyleSheet.create({
     borderBottomColor: "#eef1f8",
     paddingVertical: 10,
   },
+  notificationRowUnread: {
+    backgroundColor: "#f7f8ff",
+  },
   notificationDot: {
     width: 10,
     height: 10,
     borderRadius: 5,
     backgroundColor: "#4f46e5",
+  },
+  notificationDotRead: {
+    backgroundColor: "#c7cfde",
   },
   notificationContent: {
     flex: 1,

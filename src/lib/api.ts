@@ -41,6 +41,15 @@ export type SavingsGoalSummary = {
   currentAmount: number;
   status: string;
   targetDate: string | null;
+  completedAt: string | null;
+};
+
+export type ChildAchievementSummary = {
+  id: string;
+  title: string;
+  description: string | null;
+  points: number;
+  unlockedAt: string | null;
 };
 
 export type TransactionSummary = {
@@ -110,6 +119,7 @@ export type ParentSavingsGoalSummary = {
   currentAmount: number;
   status: string;
   targetDate: string | null;
+  completedAt: string | null;
 };
 
 export type ParentChoreSummary = {
@@ -158,6 +168,9 @@ export type AdminLesson = {
   id: string;
   title: string;
   content: string;
+  resourceType: "text" | "pdf" | "video";
+  resourceUrl: string | null;
+  fileName: string | null;
   isPublished: boolean;
   createdAt: string;
 };
@@ -167,6 +180,123 @@ export type AdminQuiz = {
   title: string;
   isPublished: boolean;
   createdAt: string;
+};
+
+export type ChildLearningLesson = {
+  assignmentId: string;
+  lessonId: string;
+  title: string;
+  content: string;
+  resourceType: "text" | "pdf" | "video";
+  resourceUrl: string | null;
+  fileName: string | null;
+  status: string;
+  progressPercent: number;
+  studyDays: number;
+  studyStartAt: string | null;
+  studyEndAt: string | null;
+  firstViewedAt: string | null;
+  lastViewedAt: string | null;
+  completedAt: string | null;
+  assignedAt: string;
+};
+
+export type ParentLearningAssignment = {
+  assignmentId: string;
+  childId: string;
+  childName: string;
+  lessonId: string;
+  lessonTitle: string;
+  resourceType: "text" | "pdf" | "video";
+  status: string;
+  progressPercent: number;
+  firstViewedAt: string | null;
+  lastViewedAt: string | null;
+  completedAt: string | null;
+  assignedAt: string;
+};
+
+export type AdminOverviewData = {
+  totalAmountTransacted: number;
+  activitySeries: number[];
+  approvalSeries: number[];
+  categoryBreakdown: Array<{
+    label: string;
+    amount: number;
+    percent: number;
+  }>;
+  recentTransactions: Array<{
+    id: string;
+    childName: string;
+    type: "earn" | "spend";
+    category: string;
+    amount: number;
+    status: "pending" | "approved" | "rejected";
+    createdAt: string;
+  }>;
+  topSavingGoals: Array<{
+    id: string;
+    title: string;
+    childName: string;
+    currentAmount: number;
+    targetAmount: number;
+  }>;
+  supportTickets: Array<{
+    id: string;
+    issueType: string;
+    status: string;
+    createdAt: string;
+  }>;
+  criticalAlerts: Array<{
+    id: string;
+    title: string;
+    detail: string;
+    severity: "danger" | "warning" | "info";
+    createdAt: string;
+  }>;
+  newUsersThisMonth: number;
+};
+
+export type AdminParentUsersData = {
+  summary: {
+    totalParents: number;
+    totalChildrenLinked: number;
+    totalBalanceHeld: number;
+    totalParentDeposits: number;
+    totalDepositTransactions: number;
+    openSupportTickets: number;
+    pendingTransactions: number;
+  };
+  parents: Array<{
+    id: string;
+    fullName: string;
+    email: string;
+    childCount: number;
+    accountBalance: number;
+    totalDeposited: number;
+    openTicketCount: number;
+  }>;
+};
+
+export type AdminChildUsersData = {
+  summary: {
+    totalChildren: number;
+    totalWalletBalance: number;
+    pendingApprovals: number;
+    approvedEarn: number;
+    approvedSpend: number;
+    goalsCompleted: number;
+    choresCompleted: number;
+  };
+  children: Array<{
+    id: string;
+    nickname: string;
+    age: number;
+    parentName: string;
+    walletBalance: number;
+    totalEarned: number;
+    totalSpent: number;
+  }>;
 };
 
 export type ParentPreferences = {
@@ -185,15 +315,30 @@ export type ParentNotification = {
   type: string;
   message: string;
   createdAt: string;
+  isRead: boolean;
 };
 
 export type ParentReportSummary = {
-  approvedCount: number;
-  pendingCount: number;
-  totalSpent: number;
-  totalEarned: number;
-  goalsCompleted: number;
-  choresCompleted: number;
+  parent: {
+    currentBalance: number;
+    totalDeposited: number;
+    depositTransactions: number;
+    totalDepositAmount: number;
+    reservedForActiveAllowances: number;
+    totalSentToChildren: number;
+  };
+  children: {
+    childCount: number;
+    approvedCount: number;
+    pendingCount: number;
+    totalSpent: number;
+    totalEarned: number;
+    walletBalance: number;
+    lifetimeEarned: number;
+    lifetimeSpent: number;
+    goalsCompleted: number;
+    choresCompleted: number;
+  };
 };
 
 export type ParentSupportTicket = {
@@ -208,6 +353,18 @@ export type ParentAccountBalance = {
   balance: number;
   totalDeposited: number;
 };
+
+export type ParentReportExportType =
+  | "parent-summary"
+  | "children-overview"
+  | "transactions"
+  | "goals"
+  | "chores"
+  | "allowances"
+  | "learning"
+  | "support"
+  | "full-export";
+export type StatementIncludeField = "date" | "child" | "type" | "status" | "description" | "amount";
 
 const fallbackBaseUrl = "http://localhost:3000";
 const configuredBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL?.trim() || fallbackBaseUrl;
@@ -283,7 +440,7 @@ export function apiLogout() {
 }
 
 export function apiChildWallet() {
-  return request<{ wallet: WalletSummary; savingsGoals: SavingsGoalSummary[] }>("/api/child/wallet", {
+  return request<{ wallet: WalletSummary; savingsGoals: SavingsGoalSummary[]; achievements: ChildAchievementSummary[] }>("/api/child/wallet", {
     method: "GET",
   });
 }
@@ -328,6 +485,24 @@ export function apiFundChildGoal(input: { goalId: string; amount: number }) {
     wallet: WalletSummary;
     goal: SavingsGoalSummary;
   }>("/api/child/savings-goals/fund", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function apiCreateChildWithdrawal(input: {
+  source: "wallet" | "goal";
+  amount: number;
+  goalId?: string;
+  description?: string;
+}) {
+  return request<{
+    message: string;
+    transactionId: string;
+    status: string;
+    wallet: WalletSummary;
+    goal: SavingsGoalSummary | null;
+  }>("/api/child/withdrawals", {
     method: "POST",
     body: JSON.stringify(input),
   });
@@ -472,8 +647,39 @@ export function apiUpdateParentAccount(input: ParentProfile) {
   });
 }
 
+export function apiParentChangeChildPassword(
+  childId: string,
+  input: {
+    newPassword: string;
+    confirmPassword: string;
+  }
+) {
+  return request<{ message: string }>(`/api/parent/children/${encodeURIComponent(childId)}/password`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
 export function apiAdminAnalytics() {
   return request<AdminAnalytics>("/api/admin/analytics", {
+    method: "GET",
+  });
+}
+
+export function apiAdminOverview() {
+  return request<AdminOverviewData>("/api/admin/overview", {
+    method: "GET",
+  });
+}
+
+export function apiAdminParentUsers() {
+  return request<AdminParentUsersData>("/api/admin/users/parents", {
+    method: "GET",
+  });
+}
+
+export function apiAdminChildUsers() {
+  return request<AdminChildUsersData>("/api/admin/users/children", {
     method: "GET",
   });
 }
@@ -484,7 +690,15 @@ export function apiAdminLessons() {
   });
 }
 
-export function apiCreateAdminLesson(input: { title: string; content: string; isPublished?: boolean }) {
+export function apiCreateAdminLesson(input: {
+  title: string;
+  content: string;
+  resourceType?: "text" | "pdf" | "video";
+  resourceUrl?: string;
+  fileName?: string;
+  fileData?: string;
+  isPublished?: boolean;
+}) {
   return request<{ lesson: AdminLesson }>("/api/admin/lessons", {
     method: "POST",
     body: JSON.stringify(input),
@@ -537,6 +751,47 @@ export function apiParentPublishedLessons() {
   });
 }
 
+export function apiParentLearningAssignments() {
+  return request<{ assignments: ParentLearningAssignment[] }>("/api/parent/learning/assignments", {
+    method: "GET",
+  });
+}
+
+export function apiParentAssignLearningLesson(input: {
+  childId: string;
+  lessonId: string;
+  studyStartAt: string;
+  studyEndAt: string;
+}) {
+  return request<{ message: string; assignmentId: string }>("/api/parent/learning/assignments", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function apiChildLearningLessons() {
+  return request<{ lessons: ChildLearningLesson[] }>("/api/child/learning/lessons", {
+    method: "GET",
+  });
+}
+
+export function apiUpdateChildLearningProgress(assignmentId: string, progressPercent: number) {
+  return request<{
+    message: string;
+    assignment: {
+      assignmentId: string;
+      status: string;
+      progressPercent: number;
+      firstViewedAt: string | null;
+      lastViewedAt: string | null;
+      completedAt: string | null;
+    };
+  }>(`/api/child/learning/lessons/${encodeURIComponent(assignmentId)}/progress`, {
+    method: "PATCH",
+    body: JSON.stringify({ progressPercent }),
+  });
+}
+
 export function apiParentPreferences() {
   return request<{ preferences: ParentPreferences }>("/api/parent/preferences", {
     method: "GET",
@@ -551,15 +806,69 @@ export function apiUpdateParentPreferences(input: ParentPreferences) {
 }
 
 export function apiParentNotifications() {
-  return request<{ notifications: ParentNotification[] }>("/api/parent/notifications", {
+  return request<{ notifications: ParentNotification[]; unreadCount: number }>("/api/parent/notifications", {
     method: "GET",
   });
 }
 
-export function apiParentReportSummary() {
-  return request<{ summary: ParentReportSummary }>("/api/parent/reports/summary", {
+export function apiParentMarkNotificationsRead(notificationIds: string[]) {
+  return request<{ message: string }>("/api/parent/notifications/mark-read", {
+    method: "PATCH",
+    body: JSON.stringify({ notificationIds }),
+  });
+}
+
+export function apiParentMarkAllNotificationsRead() {
+  return request<{ message: string }>("/api/parent/notifications/mark-all-read", {
+    method: "PATCH",
+  });
+}
+
+export function apiParentReportSummary(range: "this_month" | "last_30_days" | "all_time" = "this_month") {
+  return request<{ summary: ParentReportSummary }>(`/api/parent/reports/summary?range=${encodeURIComponent(range)}`, {
     method: "GET",
   });
+}
+
+export function apiParentReportExport(
+  type: ParentReportExportType,
+  range: "this_month" | "last_30_days" | "all_time" = "this_month"
+) {
+  return request<{ filename: string; csv: string; type: ParentReportExportType; range: string; rowCount: number }>(
+    `/api/parent/reports/export?type=${encodeURIComponent(type)}&range=${encodeURIComponent(range)}`,
+    {
+      method: "GET",
+    }
+  );
+}
+
+export function apiParentReportPdf(
+  type: ParentReportExportType,
+  range: "this_month" | "last_30_days" | "all_time" = "this_month"
+) {
+  return request<{ filename: string; mimeType: string; pdfBase64: string; type: ParentReportExportType; range: string; count: number }>(
+    `/api/parent/reports/pdf?type=${encodeURIComponent(type)}&range=${encodeURIComponent(range)}`,
+    {
+      method: "GET",
+    }
+  );
+}
+
+export function apiParentTransactionStatementPdf(input: {
+  childId?: string;
+  txType?: "all" | "earn" | "spend";
+  txStatus?: "all" | "pending" | "approved" | "rejected";
+  include: StatementIncludeField[];
+}) {
+  const params = new URLSearchParams();
+  params.set("childId", input.childId || "all");
+  params.set("txType", input.txType || "all");
+  params.set("txStatus", input.txStatus || "all");
+  params.set("include", input.include.join(","));
+  return request<{ filename: string; mimeType: string; pdfBase64: string; count: number }>(
+    `/api/parent/transactions/statement-pdf?${params.toString()}`,
+    { method: "GET" }
+  );
 }
 
 export function apiParentSupportTickets() {

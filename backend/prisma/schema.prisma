@@ -57,6 +57,9 @@ model User {
   parentSettings       ParentSettings?
   supportTickets       SupportTicket[]
   dashboardActionLogs  DashboardActionLog[]
+  notificationReads    NotificationRead[]
+  parentDeposits       ParentDeposit[]
+  lessonAssignments    ChildLessonAssignment[] @relation("ParentLessonAssignments")
 }
 
 model ChildProfile {
@@ -76,6 +79,7 @@ model ChildProfile {
   transactions       Transaction[]
   chores             ChoreAssignment[]
   allowanceSchedules AllowanceSchedule[]
+  lessonAssignments  ChildLessonAssignment[]
 }
 
 model ChoreAssignment {
@@ -129,6 +133,8 @@ model Transaction {
   type           TransactionType
   status         TransactionStatus @default(pending)
   description    String?
+  withdrawalSource String?
+  savingsGoalId String?
   approvedById   String?
   reviewedAt     DateTime?
   createdAt      DateTime          @default(now())
@@ -146,6 +152,7 @@ model SavingsGoal {
   currentAmount  Float       @default(0)
   status         GoalStatus  @default(active)
   targetDate     DateTime?
+  completedAt    DateTime?
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
   child          ChildProfile @relation(fields: [childId], references: [id], onDelete: Cascade)
@@ -186,11 +193,38 @@ model Lesson {
   id             String      @id @default(cuid())
   title          String
   content        String
+  resourceType   String      @default("text")
+  resourceUrl    String?
+  fileName       String?
   isPublished    Boolean     @default(false)
   createdById    String
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
   createdBy      User        @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  assignments    ChildLessonAssignment[]
+}
+
+model ChildLessonAssignment {
+  id          String       @id @default(cuid())
+  parentId    String
+  childId     String
+  lessonId    String
+  status      String       @default("assigned")
+  progressPercent Int      @default(0)
+  studyDays   Int          @default(7)
+  studyStartAt DateTime?
+  studyEndAt   DateTime?
+  firstViewedAt DateTime?
+  lastViewedAt DateTime?
+  completedAt DateTime?
+  assignedAt  DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  parent      User         @relation("ParentLessonAssignments", fields: [parentId], references: [id], onDelete: Cascade)
+  child       ChildProfile @relation(fields: [childId], references: [id], onDelete: Cascade)
+  lesson      Lesson       @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  @@unique([childId, lessonId])
+  @@index([parentId, assignedAt])
 }
 
 model Quiz {
@@ -239,4 +273,28 @@ model DashboardActionLog {
   metadata    String?
   createdAt   DateTime @default(now())
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model NotificationRead {
+  id             String   @id @default(cuid())
+  userId         String
+  notificationId String
+  readAt         DateTime @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, notificationId])
+  @@index([userId])
+}
+
+model ParentDeposit {
+  id        String   @id @default(cuid())
+  parentId  String
+  amount    Float
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  parent    User     @relation(fields: [parentId], references: [id], onDelete: Cascade)
+
+  @@index([parentId, createdAt])
 }

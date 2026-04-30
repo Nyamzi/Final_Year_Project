@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { BudgetPeriod, ChoreStatus, TransactionStatus, TransactionType } from "@prisma/client";
+import { BudgetPeriod, ChoreStatus, GoalStatus, Prisma, TransactionStatus, TransactionType } from "@prisma/client";
 import { authMiddleware, AuthenticatedRequest, requireRole } from "../middleware/auth";
 import { prisma } from "../db";
 
@@ -22,6 +22,43 @@ const fundGoalSchema = z.object({
   goalId: z.string().min(1),
   amount: z.number().positive(),
 });
+
+const withdrawalSchema = z.object({
+  source: z.enum(["wallet", "goal"]),
+  amount: z.number().positive(),
+  goalId: z.string().min(1).optional(),
+  description: z.string().max(200).optional(),
+});
+
+const learningProgressSchema = z.object({
+  progressPercent: z.number().min(0).max(100),
+});
+
+async function awardGoalCompletionStar(
+  tx: Prisma.TransactionClient,
+  input: { childId: string; goalId: string; goalTitle: string }
+) {
+  const description = `Golden star for completed savings goal ${input.goalId}`;
+  const existing = await tx.achievement.findFirst({
+    where: {
+      childId: input.childId,
+      description,
+    },
+    select: { id: true },
+  });
+
+  if (existing) return;
+
+  await tx.achievement.create({
+    data: {
+      childId: input.childId,
+      title: `Golden Star: ${input.goalTitle}`,
+      description,
+      points: 1,
+      unlockedAt: new Date(),
+    },
+  });
+}
 
 function getBudgetPeriodStart(date: Date, periodType: BudgetPeriod): Date {
   const start = new Date(date);
@@ -120,6 +157,7 @@ router.get("/wallet", authMiddleware, requireRole("child"), async (req: Authenti
       include: {
         wallet: true,
         savingsGoals: { orderBy: { createdAt: "desc" } },
+        achievements: { orderBy: { unlockedAt: "desc" } },
       },
     });
 
@@ -140,6 +178,14 @@ router.get("/wallet", authMiddleware, requireRole("child"), async (req: Authenti
         currentAmount: Number(goal.currentAmount),
         status: goal.status,
         targetDate: goal.targetDate,
+        completedAt: goal.completedAt?.toISOString() ?? null,
+      })),
+      achievements: childProfile.achievements.map((achievement) => ({
+        id: achievement.id,
+        title: achievement.title,
+        description: achievement.description,
+        points: achievement.points,
+        unlockedAt: achievement.unlockedAt?.toISOString() ?? null,
       })),
     });
   } catch (error) {
@@ -303,6 +349,7 @@ router.get("/savings-goals", authMiddleware, requireRole("child"), async (req: A
         currentAmount: Number(goal.currentAmount),
         status: goal.status,
         targetDate: goal.targetDate,
+        completedAt: goal.completedAt?.toISOString() ?? null,
       })),
     });
   } catch (error) {
@@ -344,6 +391,7 @@ router.post("/savings-goals", authMiddleware, requireRole("child"), async (req: 
         currentAmount: Number(goal.currentAmount),
         status: goal.status,
         targetDate: goal.targetDate,
+        completedAt: goal.completedAt?.toISOString() ?? null,
       },
     });
   } catch (error) {
@@ -381,20 +429,36 @@ router.post("/savings-goals/fund", authMiddleware, requireRole("child"), async (
       return res.status(400).json({ error: "Insufficient wallet balance" });
     }
 
-    const [updatedWallet, updatedGoal] = await prisma.$transaction([
-      prisma.wallet.update({
-        where: { id: child.wallet.id },
+    const wallet = child.wallet;
+    const nextGoalAmount = Number(goal.currentAmount) + amount;
+    const goalWillComplete = nextGoalAmount >= Number(goal.targetAmount);
+    const { updatedWallet, updatedGoal } = await prisma.$transaction(async (tx) => {
+      const updatedWallet = await tx.wallet.update({
+        where: { id: wallet.id },
         data: {
-          balance: child.wallet.balance - amount,
+          balance: wallet.balance - amount,
         },
-      }),
-      prisma.savingsGoal.update({
+      });
+
+      const updatedGoal = await tx.savingsGoal.update({
         where: { id: goal.id },
         data: {
-          currentAmount: goal.currentAmount + amount,
+          currentAmount: nextGoalAmount,
+          status: goalWillComplete ? GoalStatus.completed : GoalStatus.active,
+          completedAt: goalWillComplete ? goal.completedAt ?? new Date() : null,
         },
-      }),
-    ]);
+      });
+
+      if (goalWillComplete) {
+        await awardGoalCompletionStar(tx, {
+          childId: child.id,
+          goalId: goal.id,
+          goalTitle: goal.title,
+        });
+      }
+
+      return { updatedWallet, updatedGoal };
+    });
 
     res.status(201).json({
       message: "Goal funded successfully",
@@ -410,6 +474,7 @@ router.post("/savings-goals/fund", authMiddleware, requireRole("child"), async (
         currentAmount: Number(updatedGoal.currentAmount),
         status: updatedGoal.status,
         targetDate: updatedGoal.targetDate,
+        completedAt: updatedGoal.completedAt?.toISOString() ?? null,
       },
     });
   } catch (error) {
@@ -419,6 +484,112 @@ router.post("/savings-goals/fund", authMiddleware, requireRole("child"), async (
 });
 
 // ─── Chores ───────────────────────────────────────────────────────────────────
+
+router.post("/withdrawals", authMiddleware, requireRole("child"), async (req: AuthenticatedRequest, res) => {
+  try {
+    const parsed = withdrawalSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid withdrawal payload" });
+    }
+
+    const child = await prisma.childProfile.findUnique({
+      where: { childUserId: req.user!.userId },
+      include: { wallet: true },
+    });
+
+    if (!child?.wallet) {
+      return res.status(404).json({ error: "Wallet not found" });
+    }
+
+    const amount = parsed.data.amount;
+
+    if (parsed.data.source === "wallet") {
+      if (child.wallet.balance < amount) {
+        return res.status(400).json({ error: "You do not have enough money in your wallet." });
+      }
+
+      const transaction = await prisma.transaction.create({
+        data: {
+          walletId: child.wallet.id,
+          childId: child.id,
+          amount,
+          type: TransactionType.spend,
+          status: TransactionStatus.pending,
+          description: parsed.data.description || "Wallet withdrawal request",
+          withdrawalSource: "wallet",
+        },
+      });
+
+      return res.status(201).json({
+        message: "Wallet withdrawal submitted for parent approval",
+        transactionId: transaction.id,
+        status: transaction.status,
+        wallet: {
+          balance: Number(child.wallet.balance),
+          totalEarned: Number(child.wallet.totalEarned),
+          totalSpent: Number(child.wallet.totalSpent),
+        },
+        goal: null,
+      });
+    }
+
+    if (!parsed.data.goalId) {
+      return res.status(400).json({ error: "Select a completed goal to withdraw from." });
+    }
+
+    const goal = await prisma.savingsGoal.findFirst({
+      where: { id: parsed.data.goalId, childId: child.id },
+    });
+
+    if (!goal) {
+      return res.status(404).json({ error: "Savings goal not found" });
+    }
+
+    if (goal.status !== GoalStatus.completed && Number(goal.currentAmount) < Number(goal.targetAmount)) {
+      return res.status(400).json({ error: "You can only withdraw from a completed goal." });
+    }
+
+    if (amount > Number(goal.currentAmount)) {
+      return res.status(400).json({ error: "This goal does not have enough saved money." });
+    }
+
+    const transaction = await prisma.transaction.create({
+      data: {
+        walletId: child.wallet.id,
+        childId: child.id,
+        amount,
+        type: TransactionType.spend,
+        status: TransactionStatus.pending,
+        description: parsed.data.description || `Completed goal withdrawal: ${goal.title}`,
+        withdrawalSource: "goal",
+        savingsGoalId: goal.id,
+      },
+    });
+
+    res.status(201).json({
+      message: `${goal.title} withdrawal submitted for parent approval`,
+      transactionId: transaction.id,
+      status: transaction.status,
+      wallet: {
+        balance: Number(child.wallet.balance),
+        totalEarned: Number(child.wallet.totalEarned),
+        totalSpent: Number(child.wallet.totalSpent),
+      },
+      goal: {
+        id: goal.id,
+        title: goal.title,
+        targetAmount: Number(goal.targetAmount),
+        currentAmount: Number(goal.currentAmount),
+        status: goal.status,
+        targetDate: goal.targetDate,
+        completedAt: goal.completedAt?.toISOString() ?? null,
+      },
+    });
+  } catch (error) {
+    console.error("Create withdrawal error:", error);
+    res.status(500).json({ error: "Failed to create withdrawal" });
+  }
+});
 
 router.get("/chores", authMiddleware, requireRole("child"), async (req: AuthenticatedRequest, res) => {
   try {
@@ -562,6 +733,104 @@ router.get("/allowances", authMiddleware, requireRole("child"), async (req: Auth
   } catch (error) {
     console.error("Get allowances error:", error);
     res.status(500).json({ error: "Failed to fetch allowances" });
+  }
+});
+
+router.get("/learning/lessons", authMiddleware, requireRole("child"), async (req: AuthenticatedRequest, res) => {
+  try {
+    const child = await prisma.childProfile.findUnique({
+      where: { childUserId: req.user!.userId },
+      select: { id: true },
+    });
+    if (!child) {
+      return res.status(404).json({ error: "Child profile not found" });
+    }
+
+    const assignments = await prisma.childLessonAssignment.findMany({
+      where: { childId: child.id },
+      include: { lesson: true },
+      orderBy: { assignedAt: "desc" },
+    });
+
+    res.json({
+      lessons: assignments.map((assignment) => ({
+        assignmentId: assignment.id,
+        lessonId: assignment.lesson.id,
+        title: assignment.lesson.title,
+        content: assignment.lesson.content,
+        resourceType: assignment.lesson.resourceType,
+        resourceUrl: assignment.lesson.resourceUrl,
+        fileName: assignment.lesson.fileName,
+        status: assignment.status,
+        progressPercent: assignment.progressPercent,
+        studyDays: assignment.studyDays,
+        studyStartAt: assignment.studyStartAt?.toISOString() ?? null,
+        studyEndAt: assignment.studyEndAt?.toISOString() ?? null,
+        firstViewedAt: assignment.firstViewedAt?.toISOString() ?? null,
+        lastViewedAt: assignment.lastViewedAt?.toISOString() ?? null,
+        completedAt: assignment.completedAt?.toISOString() ?? null,
+        assignedAt: assignment.assignedAt.toISOString(),
+      })),
+    });
+  } catch (error) {
+    console.error("Get child learning lessons error:", error);
+    res.status(500).json({ error: "Failed to fetch assigned learning lessons" });
+  }
+});
+
+router.patch("/learning/lessons/:assignmentId/progress", authMiddleware, requireRole("child"), async (req: AuthenticatedRequest, res) => {
+  try {
+    const parsed = learningProgressSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid learning progress payload" });
+    }
+
+    const child = await prisma.childProfile.findUnique({
+      where: { childUserId: req.user!.userId },
+      select: { id: true },
+    });
+    if (!child) {
+      return res.status(404).json({ error: "Child profile not found" });
+    }
+
+    const assignment = await prisma.childLessonAssignment.findFirst({
+      where: {
+        id: req.params.assignmentId,
+        childId: child.id,
+      },
+    });
+    if (!assignment) {
+      return res.status(404).json({ error: "Learning assignment not found" });
+    }
+
+    const progressPercent = Math.round(parsed.data.progressPercent);
+    const now = new Date();
+    const completed = progressPercent >= 100;
+    const updated = await prisma.childLessonAssignment.update({
+      where: { id: assignment.id },
+      data: {
+        progressPercent,
+        status: completed ? "completed" : "in_progress",
+        firstViewedAt: assignment.firstViewedAt ?? now,
+        lastViewedAt: now,
+        completedAt: completed ? assignment.completedAt ?? now : null,
+      },
+    });
+
+    res.json({
+      message: completed ? "Lesson marked as completed" : "Lesson progress updated",
+      assignment: {
+        assignmentId: updated.id,
+        status: updated.status,
+        progressPercent: updated.progressPercent,
+        firstViewedAt: updated.firstViewedAt?.toISOString() ?? null,
+        lastViewedAt: updated.lastViewedAt?.toISOString() ?? null,
+        completedAt: updated.completedAt?.toISOString() ?? null,
+      },
+    });
+  } catch (error) {
+    console.error("Update child learning progress error:", error);
+    res.status(500).json({ error: "Failed to update learning progress" });
   }
 });
 
