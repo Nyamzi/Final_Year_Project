@@ -49,10 +49,28 @@ app.get("/health", (req, res) => {
 // Error handling
 app.use(errorHandler);
 
+async function connectWithRetry(maxAttempts = 5) {
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await prisma.$connect();
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt === maxAttempts) break;
+      const delayMs = attempt * 2000;
+      console.warn(`Database connection failed. Retrying in ${delayMs / 1000}s (${attempt}/${maxAttempts})...`);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
+  throw lastError;
+}
 // Initialize database and start server
 async function startServer() {
   try {
-    await prisma.$connect();
+    await connectWithRetry();
     console.log("✅ Database connected");
     app.listen(Number(PORT), HOST, () => {
       console.log(`Server running on http://${HOST}:${PORT}`);
@@ -64,5 +82,7 @@ async function startServer() {
 }
 
 startServer();
+
+
 
 
