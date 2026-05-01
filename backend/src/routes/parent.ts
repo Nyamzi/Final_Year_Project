@@ -3,7 +3,7 @@ import { prisma } from "../db";
 import { authMiddleware, AuthenticatedRequest, requireRole } from "../middleware/auth";
 import { z } from "zod";
 import { BudgetPeriod, GoalStatus, Prisma, Role, TransactionStatus, TransactionType } from "@prisma/client";
-import { hashPassword } from "../lib/auth";
+import { getSupabaseAdmin } from "../lib/supabase";
 import PDFDocument from "pdfkit";
 
 const router = Router();
@@ -230,31 +230,50 @@ router.post("/children", authMiddleware, requireRole("parent"), async (req: Auth
       return res.status(409).json({ error: "Email already exists" });
     }
 
-    const passwordHash = await hashPassword(parsed.data.password);
-
-    const result = await prisma.$transaction(async (tx) => {
-      const childUser = await tx.user.create({
-        data: {
-          fullName: parsed.data.fullName,
-          email: parsed.data.email,
-          passwordHash,
-          role: Role.child,
-        },
-      });
-
-      const profile = await tx.childProfile.create({
-        data: {
-          nickname: parsed.data.nickname,
-          age: parsed.data.age,
-          parentId: req.user!.userId,
-          childUserId: childUser.id,
-        },
-      });
-
-      await tx.wallet.create({ data: { childId: profile.id } });
-
-      return profile;
+    const admin = getSupabaseAdmin();
+    const { data: authData, error: authError } = await admin.auth.admin.createUser({
+      email: parsed.data.email,
+      password: parsed.data.password,
+      email_confirm: true,
+      user_metadata: {
+        fullName: parsed.data.fullName,
+        role: Role.child,
+        parentId: req.user!.userId,
+      },
     });
+    if (authError || !authData.user) {
+      return res.status(400).json({ error: authError?.message ?? "Unable to create child auth user" });
+    }
+
+    let result: { id: string };
+    try {
+      result = await prisma.$transaction(async (tx) => {
+        const childUser = await tx.user.create({
+          data: {
+            id: authData.user.id,
+            fullName: parsed.data.fullName,
+            email: parsed.data.email,
+            role: Role.child,
+          },
+        });
+
+        const profile = await tx.childProfile.create({
+          data: {
+            nickname: parsed.data.nickname,
+            age: parsed.data.age,
+            parentId: req.user!.userId,
+            childUserId: childUser.id,
+          },
+        });
+
+        await tx.wallet.create({ data: { childId: profile.id } });
+
+        return profile;
+      });
+    } catch (error) {
+      await admin.auth.admin.deleteUser(authData.user.id);
+      throw error;
+    }
 
     res.status(201).json({ message: "Child account created", childId: result.id });
   } catch (error) {
@@ -1217,12 +1236,12 @@ router.patch("/children/:childId/password", authMiddleware, requireRole("parent"
       return res.status(404).json({ error: "Child not found" });
     }
 
-    const passwordHash = await hashPassword(parsed.data.newPassword);
-
-    await prisma.user.update({
-      where: { id: child.childUser.id },
-      data: { passwordHash },
+    const { error: updateError } = await getSupabaseAdmin().auth.admin.updateUserById(child.childUser.id, {
+      password: parsed.data.newPassword,
     });
+    if (updateError) {
+      return res.status(400).json({ error: updateError.message });
+    }
 
     res.json({ message: `Password updated for ${child.nickname}` });
   } catch (error) {

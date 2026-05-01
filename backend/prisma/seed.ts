@@ -1,17 +1,51 @@
-import bcrypt from "bcryptjs";
 import { PrismaClient, Role } from "@prisma/client";
+import { createClient } from "@supabase/supabase-js";
 
 const prisma = new PrismaClient();
 
 async function main() {
   const adminEmail = process.env.ADMIN_EMAIL ?? "admin@banking-sim.ug";
   const adminPassword = process.env.ADMIN_PASSWORD ?? "Admin12345!";
-  const passwordHash = await bcrypt.hash(adminPassword, 10);
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!supabaseUrl || !serviceRoleKey) {
+    throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required for seeding.");
+  }
+
+  const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
+
+  const { data: listedUsers, error: listError } = await supabaseAdmin.auth.admin.listUsers();
+  if (listError) throw listError;
+
+  const existingAuthUser = listedUsers.users.find((user) => user.email === adminEmail);
+  const authUser = existingAuthUser
+    ? existingAuthUser
+    : (
+        await supabaseAdmin.auth.admin.createUser({
+          email: adminEmail,
+          password: adminPassword,
+          email_confirm: true,
+          user_metadata: {
+            fullName: "Platform Admin",
+            role: Role.admin,
+          },
+        })
+      ).data.user;
+
+  if (!authUser) {
+    throw new Error("Unable to create Supabase admin user.");
+  }
 
   const admin = await prisma.user.upsert({
-    where: { email: adminEmail },
-    update: { fullName: "Platform Admin", passwordHash, role: Role.admin },
-    create: { fullName: "Platform Admin", email: adminEmail, passwordHash, role: Role.admin },
+    where: { id: authUser.id },
+    update: { fullName: "Platform Admin", email: adminEmail, role: Role.admin },
+    create: { id: authUser.id, fullName: "Platform Admin", email: adminEmail, role: Role.admin },
   });
 
   await prisma.lesson.upsert({

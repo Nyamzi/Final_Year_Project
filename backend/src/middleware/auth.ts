@@ -1,11 +1,13 @@
 import { Request, Response, NextFunction } from "express";
-import { AUTH_COOKIE, AuthTokenPayload, UserRole, verifyToken } from "../lib/auth";
+import { AUTH_COOKIE, AuthTokenPayload, UserRole } from "../lib/auth";
+import { prisma } from "../db";
+import { supabase } from "../lib/supabase";
 
 export interface AuthenticatedRequest extends Request {
   user?: AuthTokenPayload;
 }
 
-export function authMiddleware(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+export async function authMiddleware(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   const cookieToken = (req.cookies as Record<string, string>)?.[AUTH_COOKIE];
   const authHeader = req.header("authorization");
   const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
@@ -13,11 +15,25 @@ export function authMiddleware(req: AuthenticatedRequest, res: Response, next: N
   if (!token) {
     return res.status(401).json({ error: "Unauthorized" });
   }
-  const payload = verifyToken(token);
-  if (!payload) {
+
+  const { data, error } = await supabase.auth.getUser(token);
+  if (error || !data.user?.email) {
     return res.status(401).json({ error: "Unauthorized" });
   }
-  req.user = payload;
+
+  const appUser = await prisma.user.findUnique({
+    where: { id: data.user.id },
+    select: { id: true, email: true, role: true },
+  });
+  if (!appUser) {
+    return res.status(401).json({ error: "User profile not found" });
+  }
+
+  req.user = {
+    userId: appUser.id,
+    email: appUser.email,
+    role: appUser.role,
+  };
   next();
 }
 
@@ -39,6 +55,5 @@ export function errorHandler(
   console.error("Unhandled error:", err);
   res.status(500).json({ error: "Internal server error" });
 }
-
 
 

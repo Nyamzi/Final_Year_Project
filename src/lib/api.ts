@@ -1,3 +1,5 @@
+import { supabase } from "./supabase";
+
 export type UserRole = "parent" | "child" | "admin";
 
 export type LoginRequest = {
@@ -373,10 +375,17 @@ export const API_BASE_URL = configuredBaseUrl.endsWith("/")
   ? configuredBaseUrl.slice(0, -1)
   : configuredBaseUrl;
 
-// Set this after Firebase sign-in: setAuthToken(await firebaseUser.getIdToken())
 let authToken: string | null = null;
 export function setAuthToken(token: string | null) {
   authToken = token;
+}
+
+async function getAuthToken() {
+  if (authToken) return authToken;
+
+  const { data } = await supabase.auth.getSession();
+  authToken = data.session?.access_token ?? null;
+  return authToken;
 }
 
 async function request<TResponse>(path: string, init?: RequestInit): Promise<TResponse> {
@@ -385,8 +394,9 @@ async function request<TResponse>(path: string, init?: RequestInit): Promise<TRe
     ...(init?.headers as Record<string, string> ?? {}),
   };
 
-  if (authToken) {
-    headers["Authorization"] = `Bearer ${authToken}`;
+  const token = await getAuthToken();
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
   }
 
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -413,11 +423,19 @@ async function request<TResponse>(path: string, init?: RequestInit): Promise<TRe
   return payload as TResponse;
 }
 
-export function apiLogin(input: LoginRequest) {
-  return request<LoginResponse>("/api/auth/login", {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
+export async function apiLogin(input: LoginRequest) {
+  const { data, error } = await supabase.auth.signInWithPassword(input);
+  if (error || !data.session?.access_token) {
+    throw new Error(error?.message ?? "Unable to sign in");
+  }
+
+  setAuthToken(data.session.access_token);
+  const me = await apiMe();
+  return {
+    message: "Logged in",
+    role: me.user.role,
+    token: data.session.access_token,
+  } satisfies LoginResponse;
 }
 
 export function apiRegister(input: RegisterRequest) {
@@ -433,10 +451,13 @@ export function apiMe() {
   });
 }
 
-export function apiLogout() {
-  return request<{ message: string }>("/api/auth/logout", {
+export async function apiLogout() {
+  const response = await request<{ message: string }>("/api/auth/logout", {
     method: "POST",
-  });
+  }).catch(() => ({ message: "Logged out" }));
+  await supabase.auth.signOut();
+  setAuthToken(null);
+  return response;
 }
 
 export function apiChildWallet() {

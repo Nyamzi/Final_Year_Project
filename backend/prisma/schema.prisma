@@ -3,8 +3,9 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 enum Role {
@@ -36,22 +37,21 @@ enum ChoreStatus {
 }
 
 model User {
-  id                   String              @id @default(cuid())
+  id                   String                  @id @db.Uuid
   fullName             String?
-  nin                  String?             @unique
-  phoneNumber          String?             @unique
-  email                String              @unique
-  passwordHash         String
+  nin                  String?                 @unique
+  phoneNumber          String?                 @unique
+  email                String                  @unique
   role                 Role
-  accountBalance       Float               @default(0)
-  totalDeposited       Float               @default(0)
-  createdAt            DateTime            @default(now())
-  updatedAt            DateTime            @updatedAt
-  parentChildren       ChildProfile[]      @relation("ParentChildren")
-  childProfile         ChildProfile?       @relation("ChildUser")
-  createdChores        ChoreAssignment[]   @relation("ParentAssignedChores")
-  allowanceSchedules   AllowanceSchedule[] @relation("ParentAllowanceSchedules")
-  approvedTransactions Transaction[]       @relation("ApproverTransactions")
+  accountBalance       Float                   @default(0)
+  totalDeposited       Float                   @default(0)
+  createdAt            DateTime                @default(now())
+  updatedAt            DateTime                @updatedAt
+  parentChildren       ChildProfile[]          @relation("ParentChildren")
+  childProfile         ChildProfile?           @relation("ChildUser")
+  createdChores        ChoreAssignment[]       @relation("ParentAssignedChores")
+  allowanceSchedules   AllowanceSchedule[]     @relation("ParentAllowanceSchedules")
+  approvedTransactions Transaction[]           @relation("ApproverTransactions")
   lessons              Lesson[]
   quizzes              Quiz[]
   parentSettings       ParentSettings?
@@ -63,15 +63,15 @@ model User {
 }
 
 model ChildProfile {
-  id                 String              @id @default(cuid())
+  id                 String                  @id @default(cuid())
   nickname           String
   age                Int
-  parentId           String
-  childUserId        String              @unique
-  createdAt          DateTime            @default(now())
-  updatedAt          DateTime            @updatedAt
-  parent             User                @relation("ParentChildren", fields: [parentId], references: [id], onDelete: Cascade)
-  childUser          User                @relation("ChildUser", fields: [childUserId], references: [id], onDelete: Cascade)
+  parentId           String                  @db.Uuid
+  childUserId        String                  @unique @db.Uuid
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+  parent             User                    @relation("ParentChildren", fields: [parentId], references: [id], onDelete: Cascade)
+  childUser          User                    @relation("ChildUser", fields: [childUserId], references: [id], onDelete: Cascade)
   wallet             Wallet?
   savingsGoals       SavingsGoal[]
   budgets            Budget[]
@@ -83,92 +83,92 @@ model ChildProfile {
 }
 
 model ChoreAssignment {
-  id          String      @id @default(cuid())
-  title       String
-  description String?
-  rewardAmount Float      @default(2000)
-  dueDate     DateTime?
-  status      ChoreStatus @default(assigned)
-  completedAt DateTime?
-  childId     String
-  parentId    String
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
-  child       ChildProfile @relation(fields: [childId], references: [id], onDelete: Cascade)
-  parent      User        @relation("ParentAssignedChores", fields: [parentId], references: [id], onDelete: Cascade)
+  id           String       @id @default(cuid())
+  title        String
+  description  String?
+  rewardAmount Float        @default(2000)
+  dueDate      DateTime?
+  status       ChoreStatus  @default(assigned)
+  completedAt  DateTime?
+  childId      String
+  parentId     String       @db.Uuid
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  child        ChildProfile @relation(fields: [childId], references: [id], onDelete: Cascade)
+  parent       User         @relation("ParentAssignedChores", fields: [parentId], references: [id], onDelete: Cascade)
 }
 
 model AllowanceSchedule {
-  id          String      @id @default(cuid())
+  id          String       @id @default(cuid())
   title       String
   amount      Float
   availableOn DateTime
   notes       String?
-  isActive    Boolean     @default(true)
+  isActive    Boolean      @default(true)
   childId     String
-  parentId    String
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  parentId    String       @db.Uuid
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
   child       ChildProfile @relation(fields: [childId], references: [id], onDelete: Cascade)
-  parent      User        @relation("ParentAllowanceSchedules", fields: [parentId], references: [id], onDelete: Cascade)
+  parent      User         @relation("ParentAllowanceSchedules", fields: [parentId], references: [id], onDelete: Cascade)
 }
 
 model Wallet {
-  id          String         @id @default(cuid())
-  childId     String         @unique
-  balance     Float          @default(0)
-  totalEarned Float          @default(0)
-  totalSpent  Float          @default(0)
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
-  child       ChildProfile   @relation(fields: [childId], references: [id], onDelete: Cascade)
+  id           String        @id @default(cuid())
+  childId      String        @unique
+  balance      Float         @default(0)
+  totalEarned  Float         @default(0)
+  totalSpent   Float         @default(0)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  child        ChildProfile  @relation(fields: [childId], references: [id], onDelete: Cascade)
   transactions Transaction[]
 }
 
 model Transaction {
-  id             String            @id @default(cuid())
-  walletId       String
-  childId        String
-  amount         Float
-  type           TransactionType
-  status         TransactionStatus @default(pending)
-  description    String?
+  id               String            @id @default(cuid())
+  walletId         String
+  childId          String
+  amount           Float
+  type             TransactionType
+  status           TransactionStatus @default(pending)
+  description      String?
   withdrawalSource String?
-  savingsGoalId String?
-  approvedById   String?
-  reviewedAt     DateTime?
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
-  wallet         Wallet            @relation(fields: [walletId], references: [id], onDelete: Cascade)
-  child          ChildProfile      @relation(fields: [childId], references: [id], onDelete: Cascade)
-  approvedBy     User?             @relation("ApproverTransactions", fields: [approvedById], references: [id])
+  savingsGoalId    String?
+  approvedById     String?           @db.Uuid
+  reviewedAt       DateTime?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  wallet           Wallet            @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  child            ChildProfile      @relation(fields: [childId], references: [id], onDelete: Cascade)
+  approvedBy       User?             @relation("ApproverTransactions", fields: [approvedById], references: [id])
 }
 
 model SavingsGoal {
-  id             String      @id @default(cuid())
-  childId        String
-  title          String
-  targetAmount   Float
-  currentAmount  Float       @default(0)
-  status         GoalStatus  @default(active)
-  targetDate     DateTime?
-  completedAt    DateTime?
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
-  child          ChildProfile @relation(fields: [childId], references: [id], onDelete: Cascade)
+  id            String       @id @default(cuid())
+  childId       String
+  title         String
+  targetAmount  Float
+  currentAmount Float        @default(0)
+  status        GoalStatus   @default(active)
+  targetDate    DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  child         ChildProfile @relation(fields: [childId], references: [id], onDelete: Cascade)
 }
 
 model Budget {
-  id             String      @id @default(cuid())
-  childId        String
-  monthlyLimit   Float
-  periodType     BudgetPeriod @default(monthly)
-  isActive       Boolean     @default(true)
-  periodStart    DateTime    @default(now())
-  periodEnd      DateTime?
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
-  child          ChildProfile @relation(fields: [childId], references: [id], onDelete: Cascade)
+  id           String       @id @default(cuid())
+  childId      String
+  monthlyLimit Float
+  periodType   BudgetPeriod @default(monthly)
+  isActive     Boolean      @default(true)
+  periodStart  DateTime     @default(now())
+  periodEnd    DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  child        ChildProfile @relation(fields: [childId], references: [id], onDelete: Cascade)
 }
 
 enum BudgetPeriod {
@@ -178,68 +178,68 @@ enum BudgetPeriod {
 }
 
 model Achievement {
-  id             String      @id @default(cuid())
-  childId        String
-  title          String
-  description    String?
-  points         Int         @default(0)
-  unlockedAt     DateTime?
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
-  child          ChildProfile @relation(fields: [childId], references: [id], onDelete: Cascade)
+  id          String       @id @default(cuid())
+  childId     String
+  title       String
+  description String?
+  points      Int          @default(0)
+  unlockedAt  DateTime?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  child       ChildProfile @relation(fields: [childId], references: [id], onDelete: Cascade)
 }
 
 model Lesson {
-  id             String      @id @default(cuid())
-  title          String
-  content        String
-  resourceType   String      @default("text")
-  resourceUrl    String?
-  fileName       String?
-  isPublished    Boolean     @default(false)
-  createdById    String
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
-  createdBy      User        @relation(fields: [createdById], references: [id], onDelete: Cascade)
-  assignments    ChildLessonAssignment[]
+  id           String                  @id @default(cuid())
+  title        String
+  content      String
+  resourceType String                  @default("text")
+  resourceUrl  String?
+  fileName     String?
+  isPublished  Boolean                 @default(false)
+  createdById  String                  @db.Uuid
+  createdAt    DateTime                @default(now())
+  updatedAt    DateTime                @updatedAt
+  createdBy    User                    @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  assignments  ChildLessonAssignment[]
 }
 
 model ChildLessonAssignment {
-  id          String       @id @default(cuid())
-  parentId    String
-  childId     String
-  lessonId    String
-  status      String       @default("assigned")
-  progressPercent Int      @default(0)
-  studyDays   Int          @default(7)
-  studyStartAt DateTime?
-  studyEndAt   DateTime?
-  firstViewedAt DateTime?
-  lastViewedAt DateTime?
-  completedAt DateTime?
-  assignedAt  DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
-  parent      User         @relation("ParentLessonAssignments", fields: [parentId], references: [id], onDelete: Cascade)
-  child       ChildProfile @relation(fields: [childId], references: [id], onDelete: Cascade)
-  lesson      Lesson       @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  id              String       @id @default(cuid())
+  parentId        String       @db.Uuid
+  childId         String
+  lessonId        String
+  status          String       @default("assigned")
+  progressPercent Int          @default(0)
+  studyDays       Int          @default(7)
+  studyStartAt    DateTime?
+  studyEndAt      DateTime?
+  firstViewedAt   DateTime?
+  lastViewedAt    DateTime?
+  completedAt     DateTime?
+  assignedAt      DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  parent          User         @relation("ParentLessonAssignments", fields: [parentId], references: [id], onDelete: Cascade)
+  child           ChildProfile @relation(fields: [childId], references: [id], onDelete: Cascade)
+  lesson          Lesson       @relation(fields: [lessonId], references: [id], onDelete: Cascade)
 
   @@unique([childId, lessonId])
   @@index([parentId, assignedAt])
 }
 
 model Quiz {
-  id             String      @id @default(cuid())
-  title          String
-  isPublished    Boolean     @default(false)
-  createdById    String
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
-  createdBy      User        @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  id          String   @id @default(cuid())
+  title       String
+  isPublished Boolean  @default(false)
+  createdById String   @db.Uuid
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
 }
 
 model ParentSettings {
   id                         String   @id @default(cuid())
-  parentId                   String   @unique
+  parentId                   String   @unique @db.Uuid
   withdrawalApprovalRequired Boolean  @default(true)
   accountFreezeEnabled       Boolean  @default(false)
   merchantRestrictions       String?
@@ -254,30 +254,30 @@ model ParentSettings {
 }
 
 model SupportTicket {
-  id          String   @id @default(cuid())
-  parentId    String
-  issueType   String
-  message     String
-  status      String   @default("open")
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  parent      User     @relation(fields: [parentId], references: [id], onDelete: Cascade)
+  id        String   @id @default(cuid())
+  parentId  String   @db.Uuid
+  issueType String
+  message   String
+  status    String   @default("open")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  parent    User     @relation(fields: [parentId], references: [id], onDelete: Cascade)
 }
 
 model DashboardActionLog {
-  id          String   @id @default(cuid())
-  userId      String
-  role        Role
-  dashboard   String
-  action      String
-  metadata    String?
-  createdAt   DateTime @default(now())
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id        String   @id @default(cuid())
+  userId    String   @db.Uuid
+  role      Role
+  dashboard String
+  action    String
+  metadata  String?
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model NotificationRead {
   id             String   @id @default(cuid())
-  userId         String
+  userId         String   @db.Uuid
   notificationId String
   readAt         DateTime @default(now())
   createdAt      DateTime @default(now())
@@ -290,7 +290,7 @@ model NotificationRead {
 
 model ParentDeposit {
   id        String   @id @default(cuid())
-  parentId  String
+  parentId  String   @db.Uuid
   amount    Float
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

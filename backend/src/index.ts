@@ -1,8 +1,8 @@
+import "dotenv/config";
 import { prisma } from "./db";
 
 import express from "express";
 import cors from "cors";
-import dotenv from "dotenv";
 import path from "path";
 import { errorHandler } from "./middleware/auth";
 import authRoutes from "./routes/auth";
@@ -11,10 +11,9 @@ import parentRoutes from "./routes/parent";
 import adminRoutes from "./routes/admin";
 import actionRoutes from "./routes/actions";
 
-dotenv.config();
-
 const app = express();
 const PORT = process.env.PORT || 3000;
+const HOST = process.env.HOST || "0.0.0.0";
 
 app.use(cors({
   origin: [
@@ -55,8 +54,8 @@ async function startServer() {
   try {
     await prisma.$connect();
     console.log("✅ Database connected");
-    app.listen(PORT, () => {
-      console.log(`✅ Server running on http://localhost:${PORT}`);
+    app.listen(Number(PORT), HOST, () => {
+      console.log(`Server running on http://${HOST}:${PORT}`);
     });
   } catch (error) {
     console.error("Failed to start server:", error);
@@ -65,4 +64,5 @@ async function startServer() {
 }
 
 startServer();
+
 

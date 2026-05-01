@@ -1,14 +1,10 @@
 import { Router } from "express";
 import { z } from "zod";
 import { Role } from "@prisma/client";
-import {
-  AUTH_COOKIE,
-  comparePassword,
-  hashPassword,
-  signToken,
-} from "../lib/auth";
+import { AUTH_COOKIE } from "../lib/auth";
 import { authMiddleware, AuthenticatedRequest } from "../middleware/auth";
 import { prisma } from "../db";
+import { getSupabaseAdmin, supabase } from "../lib/supabase";
 
 const router = Router();
 
@@ -40,26 +36,27 @@ router.post("/login", async (req, res) => {
       return res.status(400).json({ error: "Invalid input" });
     }
 
-    const user = await prisma.user.findUnique({ where: { email: parsed.data.email } });
+    const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+      email: parsed.data.email,
+      password: parsed.data.password,
+    });
+    if (authError || !authData.session?.access_token || !authData.user) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: authData.user.id } });
     if (!user) {
-      return res.status(401).json({ error: "Invalid credentials" });
+      return res.status(401).json({ error: "User profile not found" });
     }
 
-    const valid = await comparePassword(parsed.data.password, user.passwordHash);
-    if (!valid) {
-      return res.status(401).json({ error: "Invalid credentials" });
-    }
-
-    const token = signToken({ userId: user.id, role: user.role as "parent" | "child" | "admin", email: user.email });
-
-    res.cookie(AUTH_COOKIE, token, {
+    res.cookie(AUTH_COOKIE, authData.session.access_token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in ms
+      maxAge: authData.session.expires_in * 1000,
     });
 
-    res.json({ message: "Logged in", role: user.role, token });
+    res.json({ message: "Logged in", role: user.role, token: authData.session.access_token });
   } catch (error) {
     console.error("Login error:", error);
     res.status(500).json({ error: "Login failed" });
@@ -98,19 +95,38 @@ router.post("/register", async (req, res) => {
       return res.status(409).json({ error: "Phone number already registered" });
     }
 
-    const passwordHash = await hashPassword(parsed.data.password);
-    await prisma.user.create({
-      data: {
+    const admin = getSupabaseAdmin();
+    const { data: authData, error: authError } = await admin.auth.admin.createUser({
+      email: parsed.data.email,
+      password: parsed.data.password,
+      email_confirm: true,
+      user_metadata: {
         fullName: parsed.data.fullName,
-        nin: parsed.data.nin.toUpperCase(),
-        phoneNumber: parsed.data.phoneNumber,
-        email: parsed.data.email,
-        passwordHash,
         role: Role.parent,
       },
     });
 
-    res.status(201).json({ message: "Parent account created" });
+    if (authError || !authData.user) {
+      return res.status(400).json({ error: authError?.message ?? "Unable to create auth user" });
+    }
+
+    try {
+      await prisma.user.create({
+        data: {
+          id: authData.user.id,
+          fullName: parsed.data.fullName,
+          nin: parsed.data.nin.toUpperCase(),
+          phoneNumber: parsed.data.phoneNumber,
+          email: parsed.data.email,
+          role: Role.parent,
+        },
+      });
+    } catch (error) {
+      await admin.auth.admin.deleteUser(authData.user.id);
+      throw error;
+    }
+
+    res.status(201).json({ message: "Parent account created", userId: authData.user.id });
   } catch (error) {
     console.error("Register error:", error);
     res.status(500).json({ error: "Registration failed" });
@@ -143,15 +159,18 @@ router.post("/change-password", authMiddleware, async (req: AuthenticatedRequest
 
     const user = await prisma.user.findUnique({
       where: { id: req.user!.userId },
-      select: { id: true, passwordHash: true },
+      select: { id: true, email: true },
     });
 
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
 
-    const isValid = await comparePassword(currentPassword, user.passwordHash);
-    if (!isValid) {
+    const { error: signInError } = await supabase.auth.signInWithPassword({
+      email: user.email,
+      password: currentPassword,
+    });
+    if (signInError) {
       return res.status(401).json({ error: "Current password is incorrect" });
     }
 
@@ -159,8 +178,12 @@ router.post("/change-password", authMiddleware, async (req: AuthenticatedRequest
       return res.status(400).json({ error: "New password must be different from current password" });
     }
 
-    const passwordHash = await hashPassword(newPassword);
-    await prisma.user.update({ where: { id: user.id }, data: { passwordHash } });
+    const { error: updateError } = await getSupabaseAdmin().auth.admin.updateUserById(user.id, {
+      password: newPassword,
+    });
+    if (updateError) {
+      return res.status(400).json({ error: updateError.message });
+    }
 
     res.json({ message: "Password changed successfully" });
   } catch (error) {
@@ -170,4 +193,3 @@ router.post("/change-password", authMiddleware, async (req: AuthenticatedRequest
 });
 
 export default router;
-
