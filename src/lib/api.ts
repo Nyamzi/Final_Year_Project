@@ -388,6 +388,10 @@ async function getAuthToken() {
   return authToken;
 }
 
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 async function request<TResponse>(path: string, init?: RequestInit): Promise<TResponse> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -399,11 +403,17 @@ async function request<TResponse>(path: string, init?: RequestInit): Promise<TRe
     headers["Authorization"] = `Bearer ${token}`;
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    credentials: "include",
-    headers,
-  });
+  const url = `${API_BASE_URL}${path}`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...init,
+      credentials: "include",
+      headers,
+    });
+  } catch (error) {
+    throw new Error(`Backend network failed: ${url} (${getErrorMessage(error)})`);
+  }
 
   const text = await response.text();
   let payload: Record<string, unknown> = {};
@@ -424,7 +434,14 @@ async function request<TResponse>(path: string, init?: RequestInit): Promise<TRe
 }
 
 export async function apiLogin(input: LoginRequest) {
-  const { data, error } = await supabase.auth.signInWithPassword(input);
+  let result;
+  try {
+    result = await supabase.auth.signInWithPassword(input);
+  } catch (error) {
+    throw new Error(`Supabase Auth network failed: ${process.env.EXPO_PUBLIC_SUPABASE_URL ?? "missing-url"} (${getErrorMessage(error)})`);
+  }
+
+  const { data, error } = result;
   if (error || !data.session?.access_token) {
     throw new Error(error?.message ?? "Unable to sign in");
   }
@@ -928,3 +945,5 @@ export function apiLogDashboardAction(input: {
     body: JSON.stringify(input),
   });
 }
+
+

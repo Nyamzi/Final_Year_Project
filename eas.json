@@ -9,6 +9,7 @@
     },
     "preview": {
       "distribution": "internal",
+      "environment": "preview",
       "env": {
         "EXPO_PUBLIC_API_BASE_URL": "http://192.168.0.193:3000",
         "EXPO_PUBLIC_SUPABASE_URL": "https://idzeyvbnnqyfjcaepgoi.supabase.co",
@@ -20,6 +21,7 @@
     },
     "apk": {
       "distribution": "internal",
+      "environment": "preview",
       "env": {
         "EXPO_PUBLIC_API_BASE_URL": "http://192.168.0.193:3000",
         "EXPO_PUBLIC_SUPABASE_URL": "https://idzeyvbnnqyfjcaepgoi.supabase.co",
