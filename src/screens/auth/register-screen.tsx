@@ -47,7 +47,7 @@ export function RegisterScreen({ onGoToLogin, onRegistered }: RegisterScreenProp
         password,
         confirmPassword,
       });
-      setMessage("Account created. You can sign in now.");
+      setMessage("Account created. Check your email to verify your account before signing in.");
       onRegistered();
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Registration failed";
@@ -161,3 +161,4 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 });
+

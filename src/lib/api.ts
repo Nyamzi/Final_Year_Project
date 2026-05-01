@@ -1,4 +1,8 @@
+import { Platform } from "react-native";
+import * as WebBrowser from "expo-web-browser";
 import { supabase } from "./supabase";
+
+WebBrowser.maybeCompleteAuthSession();
 
 export type UserRole = "parent" | "child" | "admin";
 
@@ -380,6 +384,18 @@ export function setAuthToken(token: string | null) {
   authToken = token;
 }
 
+function getOAuthRedirectUrl() {
+  if (Platform.OS === "web" && typeof window !== "undefined") {
+    return window.location.origin;
+  }
+  return "kidsapp://auth/callback";
+}
+
+function getUrlParam(url: string, key: string) {
+  const parsedUrl = new URL(url.replace("#", "?"));
+  return parsedUrl.searchParams.get(key);
+}
+
 async function getAuthToken() {
   if (authToken) return authToken;
 
@@ -431,6 +447,117 @@ async function request<TResponse>(path: string, init?: RequestInit): Promise<TRe
   }
 
   return payload as TResponse;
+}
+
+export async function apiEnsureOAuthProfile() {
+  return request<AuthMeResponse>("/api/auth/oauth-profile", {
+    method: "POST",
+  });
+}
+
+export async function signInWithGoogle() {
+  const redirectTo = getOAuthRedirectUrl();
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider: "google",
+    options: {
+      redirectTo,
+      skipBrowserRedirect: true,
+    },
+  });
+
+  if (error) throw new Error(error.message);
+  if (!data?.url) throw new Error("Google sign-in URL was not returned");
+
+  const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
+  if (result.type !== "success") {
+    throw new Error("Google sign-in was cancelled");
+  }
+
+  const code = getUrlParam(result.url, "code");
+  if (code) {
+    const { data: sessionData, error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
+    if (exchangeError || !sessionData.session?.access_token) {
+      throw new Error(exchangeError?.message ?? "Unable to complete Google sign-in");
+    }
+    setAuthToken(sessionData.session.access_token);
+  } else {
+    const accessToken = getUrlParam(result.url, "access_token");
+    const refreshToken = getUrlParam(result.url, "refresh_token");
+    if (!accessToken || !refreshToken) {
+      throw new Error("Google sign-in did not return a session");
+    }
+    const { data: sessionData, error: sessionError } = await supabase.auth.setSession({
+      access_token: accessToken,
+      refresh_token: refreshToken,
+    });
+    if (sessionError || !sessionData.session?.access_token) {
+      throw new Error(sessionError?.message ?? "Unable to save Google session");
+    }
+    setAuthToken(sessionData.session.access_token);
+  }
+
+  await apiEnsureOAuthProfile();
+  const me = await apiMe();
+  return {
+    message: "Logged in",
+    role: me.user.role,
+    token: (await getAuthToken()) ?? undefined,
+  } satisfies LoginResponse;
+}
+export async function apiSendPasswordReset(email: string) {
+  const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: "kidsapp://reset-password",
+  });
+  if (error) {
+    throw new Error(error.message);
+  }
+  return { message: "Password reset email sent" };
+}
+
+export async function apiSendOtp(email: string) {
+  const { error } = await supabase.auth.signInWithOtp({
+    email,
+    options: {
+      shouldCreateUser: false,
+    },
+  });
+  if (error) {
+    throw new Error(error.message);
+  }
+  return { message: "Verification code sent" };
+}
+
+export async function apiVerifyOtp(input: { email: string; token: string }) {
+  const { data, error } = await supabase.auth.verifyOtp({
+    email: input.email,
+    token: input.token,
+    type: "email",
+  });
+  if (error || !data.session?.access_token) {
+    throw new Error(error?.message ?? "Unable to verify code");
+  }
+
+  setAuthToken(data.session.access_token);
+  const me = await apiMe();
+  return {
+    message: "Logged in",
+    role: me.user.role,
+    token: data.session.access_token,
+  } satisfies LoginResponse;
+}
+
+export async function apiResendSignupVerification(email: string) {
+  const { error } = await supabase.auth.resend({
+    type: "signup",
+    email,
+    options: {
+      emailRedirectTo: "kidsapp://auth/callback",
+    },
+  });
+  if (error) {
+    throw new Error(error.message);
+  }
+  return { message: "Verification email sent" };
 }
 
 export async function apiLogin(input: LoginRequest) {
@@ -945,5 +1072,9 @@ export function apiLogDashboardAction(input: {
     body: JSON.stringify(input),
   });
 }
+
+
+
+
 
 

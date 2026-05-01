@@ -13,7 +13,8 @@
       "backgroundColor": "#ffffff"
     },
     "plugins": [
-      "./plugins/withCleartextTraffic"
+      "./plugins/withCleartextTraffic",
+      "expo-web-browser"
     ],
     "ios": {
       "bundleIdentifier": "com.david.kidsapp",

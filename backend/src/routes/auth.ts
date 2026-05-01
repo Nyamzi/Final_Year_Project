@@ -95,14 +95,15 @@ router.post("/register", async (req, res) => {
       return res.status(409).json({ error: "Phone number already registered" });
     }
 
-    const admin = getSupabaseAdmin();
-    const { data: authData, error: authError } = await admin.auth.admin.createUser({
+    const { data: authData, error: authError } = await supabase.auth.signUp({
       email: parsed.data.email,
       password: parsed.data.password,
-      email_confirm: true,
-      user_metadata: {
-        fullName: parsed.data.fullName,
-        role: Role.parent,
+      options: {
+        emailRedirectTo: process.env.SUPABASE_AUTH_REDIRECT_URL ?? "kidsapp://auth/callback",
+        data: {
+          fullName: parsed.data.fullName,
+          role: Role.parent,
+        },
       },
     });
 
@@ -122,17 +123,63 @@ router.post("/register", async (req, res) => {
         },
       });
     } catch (error) {
-      await admin.auth.admin.deleteUser(authData.user.id);
+      await getSupabaseAdmin().auth.admin.deleteUser(authData.user.id);
       throw error;
     }
 
-    res.status(201).json({ message: "Parent account created", userId: authData.user.id });
+    res.status(201).json({ message: "Parent account created. Check your email to verify your account.", userId: authData.user.id });
   } catch (error) {
     console.error("Register error:", error);
     res.status(500).json({ error: "Registration failed" });
   }
 });
 
+// POST /api/auth/oauth-profile
+router.post("/oauth-profile", async (req, res) => {
+  try {
+    const authHeader = req.header("authorization");
+    const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+    if (!bearerToken) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { data, error } = await supabase.auth.getUser(bearerToken);
+    const authUser = data.user;
+    if (error || !authUser?.email) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const existingById = await prisma.user.findUnique({ where: { id: authUser.id } });
+    if (existingById) {
+      return res.json({ user: { userId: existingById.id, email: existingById.email, role: existingById.role } });
+    }
+
+    const existingByEmail = await prisma.user.findUnique({ where: { email: authUser.email } });
+    if (existingByEmail) {
+      return res.status(409).json({ error: "An app profile already exists for this email. Sign in with the original method or contact support." });
+    }
+
+    const fullName =
+      (authUser.user_metadata?.fullName as string | undefined) ??
+      (authUser.user_metadata?.full_name as string | undefined) ??
+      (authUser.user_metadata?.name as string | undefined) ??
+      authUser.email.split("@")[0];
+
+    const user = await prisma.user.create({
+      data: {
+        id: authUser.id,
+        fullName,
+        email: authUser.email,
+        role: Role.parent,
+      },
+    });
+
+    res.status(201).json({ user: { userId: user.id, email: user.email, role: user.role } });
+  } catch (error) {
+    console.error("OAuth profile error:", error);
+    res.status(500).json({ error: "Failed to prepare Google sign-in profile" });
+  }
+});
 // GET /api/auth/me
 router.get("/me", authMiddleware, (req: AuthenticatedRequest, res) => {
   res.json({ user: req.user });
@@ -193,3 +240,5 @@ router.post("/change-password", authMiddleware, async (req: AuthenticatedRequest
 });
 
 export default router;
+
+
