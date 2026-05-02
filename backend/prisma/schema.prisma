@@ -170,7 +170,11 @@ model SavingsGoal {
 model Budget {
   id           String       @id @default(cuid())
   childId      String
+  title        String       @default("My Budget")
   monthlyLimit Float
+  saveAmount   Float        @default(0)
+  spendAmount  Float        @default(0)
+  shareAmount  Float        @default(0)
   periodType   BudgetPeriod @default(monthly)
   isActive     Boolean      @default(true)
   periodStart  DateTime     @default(now())

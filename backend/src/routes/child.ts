@@ -30,6 +30,14 @@ const withdrawalSchema = z.object({
   description: z.string().max(200).optional(),
 });
 
+const budgetSchema = z.object({
+  title: z.string().min(2).max(40).optional(),
+  saveAmount: z.number().min(0),
+  spendAmount: z.number().min(0),
+  shareAmount: z.number().min(0),
+  periodType: z.enum(["weekly", "monthly", "quarterly"]).default("monthly"),
+});
+
 const learningProgressSchema = z.object({
   progressPercent: z.number().min(0).max(100),
 });
@@ -60,6 +68,31 @@ async function awardGoalCompletionStar(
   });
 }
 
+async function awardChildAchievement(
+  tx: Prisma.TransactionClient,
+  input: { childId: string; title: string; description: string; points?: number }
+) {
+  const existing = await tx.achievement.findFirst({
+    where: {
+      childId: input.childId,
+      description: input.description,
+    },
+    select: { id: true },
+  });
+
+  if (existing) return;
+
+  await tx.achievement.create({
+    data: {
+      childId: input.childId,
+      title: input.title,
+      description: input.description,
+      points: input.points ?? 1,
+      unlockedAt: new Date(),
+    },
+  });
+}
+
 function getBudgetPeriodStart(date: Date, periodType: BudgetPeriod): Date {
   const start = new Date(date);
   start.setHours(0, 0, 0, 0);
@@ -79,6 +112,44 @@ function getBudgetPeriodStart(date: Date, periodType: BudgetPeriod): Date {
 
   start.setDate(1);
   return start;
+}
+
+function serializeBudget(budget: {
+  id: string;
+  title: string;
+  monthlyLimit: number;
+  saveAmount: number;
+  spendAmount: number;
+  shareAmount: number;
+  periodType: BudgetPeriod;
+  isActive: boolean;
+  periodStart: Date;
+  periodEnd: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}) {
+  return {
+    id: budget.id,
+    title: budget.title,
+    monthlyLimit: Number(budget.monthlyLimit),
+    saveAmount: Number(budget.saveAmount),
+    spendAmount: Number(budget.spendAmount),
+    shareAmount: Number(budget.shareAmount),
+    periodType: budget.periodType,
+    isActive: budget.isActive,
+    periodStart: budget.periodStart.toISOString(),
+    periodEnd: budget.periodEnd?.toISOString() ?? null,
+    createdAt: budget.createdAt.toISOString(),
+    updatedAt: budget.updatedAt.toISOString(),
+  };
+}
+
+function getSuggestedBudget(balance: number) {
+  return {
+    saveAmount: Math.round(balance * 0.5),
+    spendAmount: Math.round(balance * 0.3),
+    shareAmount: Math.round(balance * 0.2),
+  };
 }
 
 async function processDueAllowancesForChild(childUserId: string) {
@@ -146,7 +217,7 @@ async function processDueAllowancesForChild(childUserId: string) {
   });
 }
 
-// ─── Wallet ──────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Wallet â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.get("/wallet", authMiddleware, requireRole("child"), async (req: AuthenticatedRequest, res) => {
   try {
@@ -158,6 +229,7 @@ router.get("/wallet", authMiddleware, requireRole("child"), async (req: Authenti
         wallet: true,
         savingsGoals: { orderBy: { createdAt: "desc" } },
         achievements: { orderBy: { unlockedAt: "desc" } },
+        budgets: { where: { isActive: true }, take: 1, orderBy: { createdAt: "desc" } },
       },
     });
 
@@ -187,6 +259,8 @@ router.get("/wallet", authMiddleware, requireRole("child"), async (req: Authenti
         points: achievement.points,
         unlockedAt: achievement.unlockedAt?.toISOString() ?? null,
       })),
+      budget: childProfile.budgets[0] ? serializeBudget(childProfile.budgets[0]) : null,
+      suggestedBudget: getSuggestedBudget(Number(childProfile.wallet.balance)),
     });
   } catch (error) {
     console.error("Get wallet error:", error);
@@ -194,7 +268,118 @@ router.get("/wallet", authMiddleware, requireRole("child"), async (req: Authenti
   }
 });
 
-// ─── Transactions ─────────────────────────────────────────────────────────────
+router.get("/budget", authMiddleware, requireRole("child"), async (req: AuthenticatedRequest, res) => {
+  try {
+    const child = await prisma.childProfile.findUnique({
+      where: { childUserId: req.user!.userId },
+      include: {
+        wallet: true,
+        budgets: { where: { isActive: true }, take: 1, orderBy: { createdAt: "desc" } },
+      },
+    });
+
+    if (!child?.wallet) {
+      return res.status(404).json({ error: "Wallet not found" });
+    }
+
+    res.json({
+      budget: child.budgets[0] ? serializeBudget(child.budgets[0]) : null,
+      suggestedBudget: getSuggestedBudget(Number(child.wallet.balance)),
+    });
+  } catch (error) {
+    console.error("Get child budget error:", error);
+    res.status(500).json({ error: "Failed to fetch budget" });
+  }
+});
+
+router.post("/budget", authMiddleware, requireRole("child"), async (req: AuthenticatedRequest, res) => {
+  try {
+    const parsed = budgetSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid budget payload" });
+    }
+
+    const child = await prisma.childProfile.findUnique({
+      where: { childUserId: req.user!.userId },
+      include: { wallet: true },
+    });
+
+    if (!child?.wallet) {
+      return res.status(404).json({ error: "Wallet not found" });
+    }
+
+    const saveAmount = Math.round(parsed.data.saveAmount);
+    const spendAmount = Math.round(parsed.data.spendAmount);
+    const shareAmount = Math.round(parsed.data.shareAmount);
+    const totalBudgeted = saveAmount + spendAmount + shareAmount;
+
+    if (totalBudgeted <= 0) {
+      return res.status(400).json({ error: "Add at least one amount to your budget." });
+    }
+
+    if (totalBudgeted > Number(child.wallet.balance)) {
+      return res.status(400).json({ error: "Your budget cannot be bigger than your wallet balance." });
+    }
+
+    const budget = await prisma.$transaction(async (tx) => {
+      await tx.budget.updateMany({
+        where: { childId: child.id, isActive: true },
+        data: { isActive: false, periodEnd: new Date() },
+      });
+
+      const createdBudget = await tx.budget.create({
+        data: {
+          childId: child.id,
+          title: parsed.data.title?.trim() || "My Budget",
+          monthlyLimit: spendAmount,
+          saveAmount,
+          spendAmount,
+          shareAmount,
+          periodType: parsed.data.periodType,
+          periodStart: getBudgetPeriodStart(new Date(), parsed.data.periodType),
+        },
+      });
+
+      await awardChildAchievement(tx, {
+        childId: child.id,
+        title: "Budget Builder",
+        description: "Budget builder badge for saving a child budget plan",
+        points: 1,
+      });
+
+      return createdBudget;
+    });
+
+    res.status(201).json({ message: "Budget saved.", budget: serializeBudget(budget) });
+  } catch (error) {
+    console.error("Save child budget error:", error);
+    res.status(500).json({ error: "Failed to save budget" });
+  }
+});
+
+router.delete("/budget", authMiddleware, requireRole("child"), async (req: AuthenticatedRequest, res) => {
+  try {
+    const child = await prisma.childProfile.findUnique({
+      where: { childUserId: req.user!.userId },
+      select: { id: true },
+    });
+
+    if (!child) {
+      return res.status(404).json({ error: "Child profile not found" });
+    }
+
+    await prisma.budget.updateMany({
+      where: { childId: child.id, isActive: true },
+      data: { isActive: false, periodEnd: new Date() },
+    });
+
+    res.json({ message: "Budget cleared." });
+  } catch (error) {
+    console.error("Clear child budget error:", error);
+    res.status(500).json({ error: "Failed to clear budget" });
+  }
+});
+// â”€â”€â”€ Transactions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.get("/transactions", authMiddleware, requireRole("child"), async (req: AuthenticatedRequest, res) => {
   try {
@@ -328,7 +513,7 @@ router.post("/transactions", authMiddleware, requireRole("child"), async (req: A
   }
 });
 
-// ─── Savings Goals ────────────────────────────────────────────────────────────
+// â”€â”€â”€ Savings Goals â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.get("/savings-goals", authMiddleware, requireRole("child"), async (req: AuthenticatedRequest, res) => {
   try {
@@ -483,7 +668,7 @@ router.post("/savings-goals/fund", authMiddleware, requireRole("child"), async (
   }
 });
 
-// ─── Chores ───────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Chores â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.post("/withdrawals", authMiddleware, requireRole("child"), async (req: AuthenticatedRequest, res) => {
   try {
@@ -700,7 +885,7 @@ router.post("/chores/:id/complete", authMiddleware, requireRole("child"), async 
   }
 });
 
-// ─── Allowances ───────────────────────────────────────────────────────────────
+// â”€â”€â”€ Allowances â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.get("/allowances", authMiddleware, requireRole("child"), async (req: AuthenticatedRequest, res) => {
   try {
@@ -806,15 +991,28 @@ router.patch("/learning/lessons/:assignmentId/progress", authMiddleware, require
     const progressPercent = Math.round(parsed.data.progressPercent);
     const now = new Date();
     const completed = progressPercent >= 100;
-    const updated = await prisma.childLessonAssignment.update({
-      where: { id: assignment.id },
-      data: {
-        progressPercent,
-        status: completed ? "completed" : "in_progress",
-        firstViewedAt: assignment.firstViewedAt ?? now,
-        lastViewedAt: now,
-        completedAt: completed ? assignment.completedAt ?? now : null,
-      },
+    const updated = await prisma.$transaction(async (tx) => {
+      const updatedAssignment = await tx.childLessonAssignment.update({
+        where: { id: assignment.id },
+        data: {
+          progressPercent,
+          status: completed ? "completed" : "in_progress",
+          firstViewedAt: assignment.firstViewedAt ?? now,
+          lastViewedAt: now,
+          completedAt: completed ? assignment.completedAt ?? now : null,
+        },
+      });
+
+      if (completed) {
+        await awardChildAchievement(tx, {
+          childId: child.id,
+          title: "Learning Star",
+          description: `Learning star for completed lesson assignment ${assignment.id}`,
+          points: 1,
+        });
+      }
+
+      return updatedAssignment;
     });
 
     res.json({
@@ -835,3 +1033,6 @@ router.patch("/learning/lessons/:assignmentId/progress", authMiddleware, require
 });
 
 export default router;
+
+
+

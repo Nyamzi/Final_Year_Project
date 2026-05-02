@@ -1,4 +1,4 @@
-import { Platform } from "react-native";
+﻿import { Platform } from "react-native";
 import * as WebBrowser from "expo-web-browser";
 import { supabase } from "./supabase";
 
@@ -43,7 +43,7 @@ export type AuthMeResponse = {
     nin: string | null;
     sex: "male" | "female" | null;
     profileImageUrl: string | null;
-    /** Set for child accounts — display name chosen by parent */
+    /** Set for child accounts â€” display name chosen by parent */
     nickname?: string | null;
   };
 };
@@ -70,6 +70,27 @@ export type ChildAchievementSummary = {
   description: string | null;
   points: number;
   unlockedAt: string | null;
+};
+
+export type ChildBudgetSummary = {
+  id: string;
+  title: string;
+  monthlyLimit: number;
+  saveAmount: number;
+  spendAmount: number;
+  shareAmount: number;
+  periodType: "weekly" | "monthly" | "quarterly";
+  isActive: boolean;
+  periodStart: string;
+  periodEnd: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ChildBudgetSuggestion = {
+  saveAmount: number;
+  spendAmount: number;
+  shareAmount: number;
 };
 
 export type TransactionSummary = {
@@ -640,8 +661,39 @@ export async function apiLogout() {
 }
 
 export function apiChildWallet() {
-  return request<{ wallet: WalletSummary; savingsGoals: SavingsGoalSummary[]; achievements: ChildAchievementSummary[] }>("/api/child/wallet", {
+  return request<{
+    wallet: WalletSummary;
+    savingsGoals: SavingsGoalSummary[];
+    achievements: ChildAchievementSummary[];
+    budget: ChildBudgetSummary | null;
+    suggestedBudget: ChildBudgetSuggestion;
+  }>("/api/child/wallet", {
     method: "GET",
+  });
+}
+
+export function apiChildBudget() {
+  return request<{ budget: ChildBudgetSummary | null; suggestedBudget: ChildBudgetSuggestion }>("/api/child/budget", {
+    method: "GET",
+  });
+}
+
+export function apiSaveChildBudget(input: {
+  title?: string;
+  saveAmount: number;
+  spendAmount: number;
+  shareAmount: number;
+  periodType: "weekly" | "monthly" | "quarterly";
+}) {
+  return request<{ message: string; budget: ChildBudgetSummary }>("/api/child/budget", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function apiClearChildBudget() {
+  return request<{ message: string }>("/api/child/budget", {
+    method: "DELETE",
   });
 }
 
@@ -1142,4 +1194,5 @@ export function apiLogDashboardAction(input: {
     body: JSON.stringify(input),
   });
 }
+
 

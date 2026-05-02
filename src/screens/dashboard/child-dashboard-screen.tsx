@@ -3,12 +3,14 @@ import { Animated, Image, Pressable, ScrollView, StyleSheet, Text, useWindowDime
 import {
   AllowanceSummary,
   apiChangePassword,
+  apiClearChildBudget,
   apiChildAllowances,
   apiChildChores,
   apiChildLearningLessons,
   apiChildSavingsGoals,
   apiChildTransactions,
   apiChildWallet,
+  apiSaveChildBudget,
   apiCompleteChildChore,
   apiCreateChildWithdrawal,
   apiCreateChildSavingsGoal,
@@ -19,6 +21,7 @@ import {
   apiUpdateChildLearningProgress,
   API_BASE_URL,
   ChildAchievementSummary,
+  ChildBudgetSummary,
   ChildLearningLesson,
   ChoreSummary,
   SavingsGoalSummary,
@@ -59,14 +62,14 @@ const tabs: Array<{ key: TabKey; label: string }> = [
 ];
 
 const webNavItems: Array<{ label: string; key: TabKey; icon: string }> = [
-  { label: "Home", key: "home", icon: "🏠" },
-  { label: "Wallet", key: "wallet", icon: "👛" },
-  { label: "Goals", key: "savings", icon: "🎯" },
-  { label: "Chores", key: "chores", icon: "✅" },
-  { label: "Learn & Earn", key: "learn", icon: "📚" },
-  { label: "Transactions", key: "transactions", icon: "📋" },
-  { label: "Notifications", key: "notifications", icon: "🔔" },
-  { label: "Profile", key: "settings", icon: "⚙️" },
+  { label: "Home", key: "home", icon: "\u{1F3E0}" },
+  { label: "Wallet", key: "wallet", icon: "\u{1F45B}" },
+  { label: "Goals", key: "savings", icon: "\u{1F3AF}" },
+  { label: "Chores", key: "chores", icon: "\u2705" },
+  { label: "Learn & Earn", key: "learn", icon: "\u{1F4DA}" },
+  { label: "Transactions", key: "transactions", icon: "\u{1F4CB}" },
+  { label: "Notifications", key: "notifications", icon: "\u{1F514}" },
+  { label: "Profile", key: "settings", icon: "\u2699\uFE0F" },
 ];
 
 function resolveChildProfileImageUrl(url: string | null | undefined): string | null {
@@ -91,6 +94,12 @@ const bgIllustration3 = require("../../../assets/Background/Background3.jpg");
 const bgIllustration4 = require("../../../assets/Background/Background4.jpg");
 const bgIllustration5 = require("../../../assets/Background/Background5.jpg");
 const bgIllustration6 = require("../../../assets/Background/Background6.jpg");
+const learnIllustration1 = require("../../../assets/Learn/Learn1.jpg");
+const learnIllustration2 = require("../../../assets/Learn/Learn2.jpg");
+const learnIllustration3 = require("../../../assets/Learn/Learn3.jpg");
+const goalIllustration1 = require("../../../assets/Goal/Goal1.jpg");
+const choreIllustration1 = require("../../../assets/Chore/Chore1.jpg");
+const moneyIllustration1 = require("../../../assets/money/money1.jpg");
 
 function getTabBackgroundImage(tab: TabKey) {
   if (tab === "home") return bgIllustration1;
@@ -103,6 +112,18 @@ function getTabBackgroundImage(tab: TabKey) {
   if (tab === "settings") return bgIllustration3;
   if (tab === "actions") return bgIllustration4;
   return bgIllustration1;
+}
+
+function getTabHeroImage(tab: TabKey) {
+  if (tab === "wallet") return walletIllustration4;
+  if (tab === "savings") return goalIllustration1;
+  if (tab === "chores") return choreIllustration1;
+  if (tab === "learn") return learnIllustration2;
+  if (tab === "transactions") return moneyIllustration1;
+  if (tab === "notifications") return bgIllustration2;
+  if (tab === "settings") return learnIllustration3;
+  if (tab === "actions") return walletIllustration5;
+  return moneyIllustration1;
 }
 
 type AnimatedTileButtonProps = {
@@ -154,6 +175,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
   const [allowances, setAllowances] = useState<AllowanceSummary[]>([]);
   const [assignedLessons, setAssignedLessons] = useState<ChildLearningLesson[]>([]);
   const [achievements, setAchievements] = useState<ChildAchievementSummary[]>([]);
+  const [budget, setBudget] = useState<ChildBudgetSummary | null>(null);
 
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -206,7 +228,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
     () => chores.filter((chore) => chore.status === "completed").reduce((sum, chore) => sum + chore.rewardAmount, 0),
     [chores]
   );
-  const featuredGoal = savingsGoals[0];
+  const featuredGoal = savingsGoals.find((goal) => goal.status !== "completed" && !goal.completedAt);
   const latestAllowance = allowances[0];
   const pendingTransactions = useMemo(() => transactions.filter((tx) => tx.status === "pending").length, [transactions]);
   const totalSavings = useMemo(() => savingsGoals.reduce((sum, goal) => sum + goal.currentAmount, 0), [savingsGoals]);
@@ -216,6 +238,16 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
   const walletBalance = wallet?.balance ?? 0;
   const walletEarned = wallet?.totalEarned ?? 0;
   const walletSpent = wallet?.totalSpent ?? 0;
+  const suggestedBudget = useMemo(
+    () => ({
+      saveAmount: Math.round(walletBalance * 0.5),
+      spendAmount: Math.round(walletBalance * 0.3),
+      shareAmount: Math.max(0, walletBalance - Math.round(walletBalance * 0.5) - Math.round(walletBalance * 0.3)),
+    }),
+    [walletBalance]
+  );
+  const displayedBudget = budget ?? suggestedBudget;
+  const hasSavedBudget = Boolean(budget);
   const completedGoalsCount = useMemo(
     () => savingsGoals.filter((goal) => goal.status === "completed" || Boolean(goal.completedAt)).length,
     [savingsGoals]
@@ -236,6 +268,34 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
     () => achievements.filter((achievement) => achievement.title.toLowerCase().includes("golden star")).length,
     [achievements]
   );
+  const badgeCatalog = useMemo(() => {
+    const hasBadge = (pattern: RegExp) =>
+      achievements.some((achievement) => pattern.test(`${achievement.title} ${achievement.description ?? ""}`));
+
+    return [
+      {
+        key: "budget",
+        title: "Budget Builder",
+        description: "Save a budget plan",
+        icon: "\u{1F4B0}",
+        unlocked: hasBadge(/budget builder|budget/i),
+      },
+      {
+        key: "goal",
+        title: "Golden Goal",
+        description: "Hit a savings goal",
+        icon: "\u2B50",
+        unlocked: hasBadge(/golden star|completed savings goal/i),
+      },
+      {
+        key: "learning",
+        title: "Learning Star",
+        description: "Complete a lesson",
+        icon: "\u{1F393}",
+        unlocked: hasBadge(/learning star|completed lesson/i),
+      },
+    ];
+  }, [achievements]);
   const avgGoalProgress = useMemo(() => {
     if (savingsGoals.length === 0) return 0;
     const total = savingsGoals.reduce((sum, goal) => {
@@ -312,7 +372,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
         return {
           ...lesson,
           id: lesson.assignmentId,
-          subtitle: `${lesson.resourceType.toUpperCase()}${lesson.fileName ? ` • ${lesson.fileName}` : ""}`,
+          subtitle: `${lesson.resourceType.toUpperCase()}${lesson.fileName ? ` - ${lesson.fileName}` : ""}`,
           statusLabel: completed ? "Completed" : progress > 0 ? "In Progress" : "Ready",
           progress,
           resourceLabel: lesson.resourceType === "video" ? "Watch" : lesson.resourceType === "pdf" ? "Open PDF" : "Read",
@@ -324,6 +384,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
   const learningProgressPercent = learningLessons.length
     ? Math.round(learningLessons.reduce((total, lesson) => total + lesson.progress, 0) / learningLessons.length)
     : 0;
+  const nextLearningLesson = learningLessons.find((lesson) => lesson.progress < 100) ?? learningLessons[0];
 
   async function loadDashboardData() {
     setIsLoading(true);
@@ -347,6 +408,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
       setWallet(walletData.wallet);
       setSavingsGoals(walletData.savingsGoals.length > 0 ? walletData.savingsGoals : savingsData.savingsGoals);
       setAchievements(walletData.achievements ?? []);
+      setBudget(walletData.budget ?? null);
       setTransactions(txData.transactions);
       setChores(choresData.chores);
       setAllowances(allowancesData.allowances);
@@ -437,6 +499,35 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
     setErrorMessage("");
   }
 
+  function renderBadgesSection() {
+    if (tab === "home" || isLoading) return null;
+
+    const unlockedCount = badgeCatalog.filter((badge) => badge.unlocked).length;
+
+    return (
+      <View style={[styles.badgesSection, isMobile ? styles.badgesSectionMobile : null]}>
+        <View style={styles.webRowBetween}>
+          <View>
+            <Text style={styles.badgesTitle}>Badges & Stars</Text>
+            <Text style={styles.badgesSubtitle}>{unlockedCount} of {badgeCatalog.length} unlocked</Text>
+          </View>
+          <Text style={styles.badgesSparkle}>{"\u2728"}</Text>
+        </View>
+        <View style={styles.badgesRow}>
+          {badgeCatalog.map((badge) => (
+            <View key={badge.key} style={[styles.badgeTile, badge.unlocked ? styles.badgeTileUnlocked : styles.badgeTileLocked]}>
+              <Text style={[styles.badgeIcon, badge.unlocked ? null : styles.badgeIconLocked]}>{badge.icon}</Text>
+              <View style={styles.badgeTextWrap}>
+                <Text style={styles.badgeTitleText}>{badge.title}</Text>
+                <Text style={styles.badgeDescription}>{badge.unlocked ? "Unlocked" : badge.description}</Text>
+              </View>
+            </View>
+          ))}
+        </View>
+      </View>
+    );
+  }
+
   async function handleCreateTransaction() {
     const amount = Number(txAmount);
     if (!Number.isFinite(amount) || amount <= 0) {
@@ -523,6 +614,55 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
     }
   }
 
+  async function handleSaveBudgetPreset(kind: "smart" | "saveMore") {
+    if (!wallet || wallet.balance <= 0) {
+      setErrorMessage("Add money to your wallet before making a budget.");
+      return;
+    }
+
+    const amounts =
+      kind === "saveMore"
+        ? {
+            saveAmount: Math.round(walletBalance * 0.6),
+            spendAmount: Math.round(walletBalance * 0.25),
+            shareAmount: Math.max(0, walletBalance - Math.round(walletBalance * 0.6) - Math.round(walletBalance * 0.25)),
+          }
+        : suggestedBudget;
+
+    setIsSubmitting(true);
+    clearMessages();
+
+    try {
+      const data = await apiSaveChildBudget({
+        title: kind === "saveMore" ? "Save More Budget" : "Smart Budget",
+        saveAmount: amounts.saveAmount,
+        spendAmount: amounts.spendAmount,
+        shareAmount: amounts.shareAmount,
+        periodType: "monthly",
+      });
+      setBudget(data.budget);
+      setStatusMessage(data.message);
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "Could not save budget.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handleClearBudget() {
+    setIsSubmitting(true);
+    clearMessages();
+
+    try {
+      const data = await apiClearChildBudget();
+      setBudget(null);
+      setStatusMessage(data.message);
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "Could not clear budget.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
   async function handleCreateWithdrawal() {
     const amount = Number(withdrawAmount);
     if (!Number.isFinite(amount) || amount <= 0) {
@@ -718,6 +858,11 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
             <Text style={styles.webSidebarChildName} numberOfLines={2}>
               {childDisplayName}
             </Text>
+            <View style={styles.webAvatarTrail}>
+              {[learnIllustration1, goalIllustration1, choreIllustration1].map((avatar, index) => (
+                <Image key={"avatar-" + index} source={avatar} style={styles.webAvatarTrailImage} resizeMode="cover" />
+              ))}
+            </View>
           </View>
           <View style={styles.webNavList}>
             {webNavItems.map((item) => {
@@ -764,8 +909,9 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                 <Text style={styles.mobileHello}>Let's learn, save and grow!</Text>
               </View>
             </View>
+            <Image source={getTabHeroImage(tab)} style={styles.mobileHeaderArt} resizeMode="cover" />
             <Pressable style={styles.mobileBellBtn} onPress={() => setTab("settings")}>
-              <Text style={styles.mobileBellIcon}>🔔</Text>
+              <Text style={styles.mobileBellIcon}>{"\u{1F514}"}</Text>
               <View style={styles.mobileBellBadge}>
                 <Text style={styles.mobileBellBadgeText}>3</Text>
               </View>
@@ -779,6 +925,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
             </View>
             <View style={styles.webTopActions}>
               <View style={styles.webSearch}><Text style={styles.webSearchText}>Search...</Text></View>
+              <Image source={getTabHeroImage(tab)} style={styles.webTopArt} resizeMode="cover" />
               <Pressable style={styles.webProfilePill} onPress={() => setTab("settings")}>
                 <Text style={styles.webProfileName}>{childDisplayName}</Text>
               </Pressable>
@@ -789,6 +936,8 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
         {statusMessage ? <Text style={styles.statusText}>{statusMessage}</Text> : null}
         {safeErrorMessage ? <Text style={styles.errorText}>{safeErrorMessage}</Text> : null}
         {isLoading ? <Text style={styles.infoText}>Loading dashboard...</Text> : null}
+        {renderBadgesSection()}
+
         {showReward ? (
           <Animated.View
             style={[
@@ -812,7 +961,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
               },
             ]}
           >
-            <Text style={styles.rewardText}>Awesome work! ⭐ Chore completed</Text>
+            <Text style={styles.rewardText}>Awesome work! {"\u2B50"} Chore completed</Text>
           </Animated.View>
         ) : null}
 
@@ -834,6 +983,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
             ]}
           >
             <View style={styles.mobileBalanceCard}>
+              <Image source={moneyIllustration1} style={styles.mobileBalanceMascot} resizeMode="contain" />
               <Text style={styles.mobileBalanceLabel}>My Wallet Balance</Text>
               <Text style={styles.mobileBalanceAmount}>{formatMoney(displayBalance)}</Text>
               <Text style={styles.mobileBalanceMeta}>Available Balance</Text>
@@ -841,32 +991,32 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
 
             <View style={styles.mobileServicesGrid}>
               <AnimatedTileButton
-                style={styles.mobileServiceItem}
+                style={[styles.mobileServiceItem, styles.mobileServiceItemMoney]}
                 onPress={() => {
                   setTxType("earn");
                   setTab("actions");
                 }}
               >
-                <Text style={styles.mobileServiceIcon}>💼</Text>
+                <Text style={styles.mobileServiceIcon}>{"\u{1F4BC}"}</Text>
                 <Text style={styles.mobileServiceLabel}>Add Money</Text>
               </AnimatedTileButton>
               <AnimatedTileButton
-                style={styles.mobileServiceItem}
+                style={[styles.mobileServiceItem, styles.mobileServiceItemRequest]}
                 onPress={() => {
                   setTxType("earn");
                   setTxDescription("Money request");
                   setTab("actions");
                 }}
               >
-                <Text style={styles.mobileServiceIcon}>✈</Text>
+                <Text style={styles.mobileServiceIcon}>{"\u2708"}</Text>
                 <Text style={styles.mobileServiceLabel}>Request Money</Text>
               </AnimatedTileButton>
-              <AnimatedTileButton style={styles.mobileServiceItem} onPress={() => setTab("savings")}>
-                <Text style={styles.mobileServiceIcon}>🎯</Text>
+              <AnimatedTileButton style={[styles.mobileServiceItem, styles.mobileServiceItemGoals]} onPress={() => setTab("savings")}>
+                <Text style={styles.mobileServiceIcon}>{"\u{1F3AF}"}</Text>
                 <Text style={styles.mobileServiceLabel}>My Goals</Text>
               </AnimatedTileButton>
-              <AnimatedTileButton style={styles.mobileServiceItem} onPress={() => setTab("chores")}>
-                <Text style={styles.mobileServiceIcon}>📋</Text>
+              <AnimatedTileButton style={[styles.mobileServiceItem, styles.mobileServiceItemChores]} onPress={() => setTab("chores")}>
+                <Text style={styles.mobileServiceIcon}>{"\u{1F4CB}"}</Text>
                 <Text style={styles.mobileServiceLabel}>My Chores</Text>
               </AnimatedTileButton>
             </View>
@@ -877,10 +1027,10 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                 <Text style={styles.mobileSectionLink}>View All</Text>
               </Pressable>
             </View>
-            <View style={styles.mobileRecentCard}>
+            <View style={[styles.mobileRecentCard, styles.kidCardBlue]}>
               <View style={styles.mobileRecentRow}>
                 <View style={styles.mobileRecentIconWrap}>
-                  <Text style={styles.mobileRecentIcon}>🎁</Text>
+                  <Text style={styles.mobileRecentIcon}>{"\u{1F381}"}</Text>
                 </View>
                 <View style={styles.rowContent}>
                   <Text style={styles.rowMain}>Allowance Received</Text>
@@ -892,7 +1042,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
               </View>
               <View style={styles.mobileRecentRow}>
                 <View style={styles.mobileRecentIconWrap}>
-                  <Text style={styles.mobileRecentIcon}>⭐</Text>
+                  <Text style={styles.mobileRecentIcon}>{"\u2B50"}</Text>
                 </View>
                 <View style={styles.rowContent}>
                   <Text style={styles.rowMain}>Chore Reward</Text>
@@ -902,7 +1052,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
               </View>
               <View style={[styles.mobileRecentRow, styles.mobileRecentRowLast]}>
                 <View style={styles.mobileRecentIconWrap}>
-                  <Text style={styles.mobileRecentIcon}>🕒</Text>
+                  <Text style={styles.mobileRecentIcon}>{"\u{1F552}"}</Text>
                 </View>
                 <View style={styles.rowContent}>
                   <Text style={styles.rowMain}>Pending Requests</Text>
@@ -913,12 +1063,13 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
             </View>
 
             <View style={styles.mobileSectionHeader}>
-              <Text style={styles.mobileSectionTitle}>My Goals</Text>
+              <Text style={styles.mobileSectionTitle}>My Active Goal</Text>
               <Pressable onPress={() => setTab("savings")}>
                 <Text style={styles.mobileSectionLink}>View All</Text>
               </Pressable>
             </View>
             <View style={styles.mobileGoalCard}>
+              <Image source={goalIllustration1} style={styles.mobileGoalArt} resizeMode="cover" />
               <View style={styles.mobileGoalProgress}>
                 <Text style={styles.mobileGoalProgressText}>
                   {featuredGoal
@@ -927,7 +1078,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                 </Text>
               </View>
               <View style={styles.mobileGoalMain}>
-                <Text style={styles.mobileGoalTitle}>{featuredGoal?.title ?? "New Goal"}</Text>
+                <Text style={styles.mobileGoalTitle}>{featuredGoal?.title ?? "No active goal yet"}</Text>
                 <Text style={styles.mobileGoalMeta}>
                   {featuredGoal
                     ? `${formatMoney(featuredGoal.currentAmount)} of ${formatMoney(featuredGoal.targetAmount)}`
@@ -949,7 +1100,26 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
               </View>
             </View>
 
-            <View style={styles.mobileTipCard}>
+            <View style={[styles.homeLearningCard, styles.kidCardYellow]}>
+              <View style={styles.homeLearningImages}>
+                <Image source={learnIllustration1} style={styles.homeLearningImage} resizeMode="cover" />
+                <Image source={learnIllustration2} style={[styles.homeLearningImage, styles.homeLearningImageRaised]} resizeMode="cover" />
+                <Image source={learnIllustration3} style={styles.homeLearningImage} resizeMode="cover" />
+              </View>
+              <View style={styles.homeLearningContent}>
+                <Text style={styles.webCardTitle}>Continue Learning</Text>
+                <Text style={styles.rowMain}>{nextLearningLesson?.title ?? "Learn about money"}</Text>
+                <Text style={styles.rowMeta} numberOfLines={2}>
+                  {nextLearningLesson?.content ?? "Read fun lessons about saving, earning, and making smart money choices."}
+                </Text>
+                <Pressable style={styles.homeLearningButton} onPress={() => setTab("learn")}>
+                  <Text style={styles.homeLearningButtonText}>Go to Learn & Earn</Text>
+                </Pressable>
+              </View>
+            </View>
+
+            <View style={[styles.mobileTipCard, styles.kidCardPink]}>
+              <Image source={choreIllustration1} style={styles.mobileTipImage} resizeMode="cover" />
               <Text style={styles.mobileTipTitle}>Quick Tip</Text>
               <Text style={styles.mobileTipText}>Saving a little today can help you achieve big dreams tomorrow!</Text>
             </View>
@@ -959,7 +1129,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
         {tab === "home" && !isMobile ? (
           <View style={styles.webGridWrap}>
             <View style={styles.webMainCol}>
-              <View style={styles.webWalletHero}>
+              <View style={[styles.webWalletHero, styles.webWalletHeroPlayful]}>
                 <View style={styles.webHeroRow}>
                   <View style={styles.webHeroMain}>
                     <Text style={styles.webWalletTitle}>My Wallet</Text>
@@ -975,35 +1145,39 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                 </View>
               </View>
 
-              <View style={styles.webCard}>
+              <View style={[styles.webCard, styles.webCardGoalFun]}>
+                <Image source={goalIllustration1} style={styles.webCardCornerImage} resizeMode="cover" />
                 <Text style={styles.webCardTitle}>My Active Goal</Text>
                 <View style={styles.webRowBetween}>
                   <View>
-                    <Text style={styles.rowMain}>{featuredGoal?.title ?? "New Bicycle"}</Text>
+                    <Text style={styles.rowMain}>{featuredGoal?.title ?? "No active goal yet"}</Text>
                     <Text style={styles.rowMeta}>
-                      {featuredGoal ? `${formatMoney(featuredGoal.currentAmount)} of ${formatMoney(featuredGoal.targetAmount)}` : "Start your first goal"}
+                      {featuredGoal ? `${formatMoney(featuredGoal.currentAmount)} of ${formatMoney(featuredGoal.targetAmount)}` : "Create or continue an active savings goal"}
                     </Text>
                   </View>
                   <Text style={styles.webGoalPct}>{activeGoalProgress}%</Text>
                 </View>
               </View>
 
-              <View style={styles.webCard}>
+              <View style={[styles.webCard, styles.webCardLearnFun]}>
                 <Text style={styles.webCardTitle}>Continue Learning</Text>
-                <View style={styles.webRowBetween}>
-                  <View>
-                    <Text style={styles.rowMain}>Why Saving is Important</Text>
-                    <Text style={styles.rowMeta}>Lesson 3 of 5</Text>
-                  </View>
-                  <Pressable style={styles.webMiniBtn} onPress={() => setTab("learn")}>
-                    <Text style={styles.webMiniBtnText}>Continue</Text>
-                  </Pressable>
+                <View style={styles.homeLearningImages}>
+                  <Image source={learnIllustration1} style={styles.homeLearningImage} resizeMode="cover" />
+                  <Image source={learnIllustration2} style={[styles.homeLearningImage, styles.homeLearningImageRaised]} resizeMode="cover" />
+                  <Image source={learnIllustration3} style={styles.homeLearningImage} resizeMode="cover" />
                 </View>
+                <Text style={styles.rowMain}>{nextLearningLesson?.title ?? "Learning about money"}</Text>
+                <Text style={styles.rowMeta} numberOfLines={3}>
+                  {nextLearningLesson?.content ?? "Learn how kids can save money, earn rewards, and make smart choices with every coin."}
+                </Text>
+                <Pressable style={styles.webMiniBtn} onPress={() => setTab("learn")}>
+                  <Text style={styles.webMiniBtnText}>Go to Learn & Earn</Text>
+                </Pressable>
               </View>
             </View>
 
             <View style={styles.webMidCol}>
-              <View style={styles.webCard}>
+              <View style={[styles.webCard, styles.webCardActionFun]}>
                 <Text style={styles.webCardTitle}>Quick Actions</Text>
                 <View style={styles.webQuickRow}>
                   <Pressable style={styles.webQuickItem} onPress={() => setTab("actions")}><Text style={styles.webQuickText}>Request Money</Text></Pressable>
@@ -1012,7 +1186,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                   <Pressable style={styles.webQuickItem} onPress={() => setTab("learn")}><Text style={styles.webQuickText}>Learn & Earn</Text></Pressable>
                 </View>
               </View>
-              <View style={styles.webCard}>
+              <View style={[styles.webCard, styles.webCardChoreFun]}>
                 <Text style={styles.webCardTitle}>My Chores</Text>
                 {chores.slice(0, 3).map((chore) => (
                   <View key={chore.id} style={styles.rowItem}>
@@ -1034,7 +1208,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
             </View>
 
             <View style={styles.webRightCol}>
-              <View style={styles.webCard}>
+              <View style={[styles.webCard, styles.webCardTipFun]}>
                 <Text style={styles.webCardTitle}>Daily Tip</Text>
                 <Image source={walletIllustration2} style={styles.webSideImage} resizeMode="contain" />
                 <Text style={styles.rowMeta}>Saving a little every day helps you achieve big dreams!</Text>
@@ -1175,7 +1349,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
         {tab === "wallet" && !isMobile ? (
           <View style={styles.sectionWrap}>
             <View style={styles.webWalletTopGrid}>
-              <View style={styles.webWalletHero}>
+              <View style={[styles.webWalletHero, styles.webWalletHeroPlayful]}>
                 <Text style={styles.webWalletTitle}>Total Balance</Text>
                 <View style={styles.webHeroRow}>
                   <View style={styles.webHeroMain}>
@@ -1186,29 +1360,127 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                 <View style={styles.webWalletStats}>
                   <Text style={styles.webWalletStat}>Available {formatMoney(Math.max(0, walletBalance - pendingTransactions * 5000))}</Text>
                   <Text style={styles.webWalletStat}>Pending {formatMoney(pendingTransactions * 5000)}</Text>
+                  <Text style={styles.webWalletStat}>Savings {formatMoney(totalSavings)}</Text>
                 </View>
               </View>
-              <View style={styles.webCard}>
-                <Text style={styles.webCardTitle}>Balance Trend</Text>
-                <View style={styles.webTrendChart}>
-                  {[20, 30, 28, 45, 48, 60, 54, 68, 62, 70].map((v, i) => (
-                    <View key={`${v}-${i}`} style={[styles.webTrendPoint, { left: 12 + i * 28, bottom: v }]} />
-                  ))}
-                </View>
+
+              <View style={[styles.webWalletHero, styles.webWithdrawHero]}>
                 <View style={styles.webRowBetween}>
-                  <Text style={styles.tableCellSuccess}>Money In {formatMoney(walletEarned)}</Text>
-                  <Text style={styles.tableCellPending}>Money Out {formatMoney(walletSpent)}</Text>
+                  <View>
+                    <Text style={styles.webWalletTitle}>Withdraw Money</Text>
+                    <Text style={styles.webWalletLabel}>Ask to use your saved money</Text>
+                  </View>
+                  <Pressable style={styles.webWithdrawToggle} onPress={() => setShowWithdrawForm((prev) => !prev)}>
+                    <Text style={styles.webWithdrawToggleText}>{showWithdrawForm ? "Close" : "Withdraw"}</Text>
+                  </Pressable>
                 </View>
+                <Image source={walletIllustration5} style={styles.webWithdrawImage} resizeMode="contain" />
+                {showWithdrawForm ? (
+                  <View style={styles.withdrawForm}>
+                    <Text style={styles.webWalletStat}>Where do you want to withdraw from?</Text>
+                    <View style={styles.choiceRow}>
+                      <Pressable
+                        style={[styles.choicePill, withdrawSource === "wallet" ? styles.choicePillActive : null]}
+                        onPress={() => setWithdrawSource("wallet")}
+                      >
+                        <Text style={[styles.choiceText, withdrawSource === "wallet" ? styles.choiceTextActive : null]}>My Account</Text>
+                      </Pressable>
+                      <Pressable
+                        style={[styles.choicePill, withdrawSource === "goal" ? styles.choicePillActive : null]}
+                        onPress={() => {
+                          setWithdrawSource("goal");
+                          if (!withdrawGoalId && withdrawableCompletedGoals[0]) setWithdrawGoalId(withdrawableCompletedGoals[0].id);
+                        }}
+                      >
+                        <Text style={[styles.choiceText, withdrawSource === "goal" ? styles.choiceTextActive : null]}>Completed Goal</Text>
+                      </Pressable>
+                    </View>
+                    {withdrawSource === "goal" ? (
+                      <View style={styles.withdrawGoalList}>
+                        {withdrawableCompletedGoals.map((goal) => (
+                          <Pressable
+                            key={goal.id}
+                            style={[styles.withdrawGoalOption, withdrawGoalId === goal.id ? styles.withdrawGoalOptionActive : null]}
+                            onPress={() => {
+                              setWithdrawGoalId(goal.id);
+                              setWithdrawAmount(String(Math.round(goal.currentAmount)));
+                            }}
+                          >
+                            <Text style={styles.rowMain}>{goal.title}</Text>
+                            <Text style={styles.rowMeta}>{formatMoney(goal.currentAmount)} saved</Text>
+                          </Pressable>
+                        ))}
+                        {withdrawableCompletedGoals.length === 0 ? (
+                          <Text style={styles.webWalletStat}>No completed goals have money left to withdraw.</Text>
+                        ) : null}
+                      </View>
+                    ) : null}
+                    <AppInput
+                      label="Amount (UGX)"
+                      value={withdrawAmount}
+                      onChangeText={setWithdrawAmount}
+                      keyboardType="numeric"
+                      placeholder="10000"
+                    />
+                    <AppInput
+                      label="Reason"
+                      value={withdrawDescription}
+                      onChangeText={setWithdrawDescription}
+                      placeholder="Optional"
+                    />
+                    <AppButton title="Submit Withdrawal" loading={isSubmitting} onPress={handleCreateWithdrawal} />
+                  </View>
+                ) : (
+                  <View style={styles.webWalletStats}>
+                    <Text style={styles.webWalletStat}>From wallet or completed goals</Text>
+                    <Text style={styles.webWalletStat}>Parent approval may be needed</Text>
+                  </View>
+                )}
               </View>
-              <View style={styles.webCard}>
-                <Text style={styles.webCardTitle}>Balance Breakdown</Text>
-                <Text style={styles.rowMeta}>Available {formatMoney(Math.max(0, walletBalance - pendingTransactions * 5000))}</Text>
-                <Text style={styles.rowMeta}>Pending {formatMoney(pendingTransactions * 5000)}</Text>
-                <Text style={styles.rowMeta}>Savings Lock {formatMoney(totalSavings)}</Text>
+
+              <View style={[styles.webWalletHero, styles.webBudgetHero]}>
+                <View style={styles.webRowBetween}>
+                  <View>
+                    <Text style={styles.webWalletTitle}>Budgeting</Text>
+                    <Text style={styles.webWalletLabel}>Plan your money before spending</Text>
+                  </View>
+                  <Image source={moneyIllustration1} style={styles.webBudgetIcon} resizeMode="cover" />
+                </View>
+                <View style={styles.webBudgetRows}>
+                  <View style={styles.webBudgetRow}>
+                    <Text style={styles.webBudgetLabel}>Save</Text>
+                    <Text style={styles.webBudgetValue}>{formatMoney(displayedBudget.saveAmount)}</Text>
+                  </View>
+                  <View style={styles.webBudgetRow}>
+                    <Text style={styles.webBudgetLabel}>Spend</Text>
+                    <Text style={styles.webBudgetValue}>{formatMoney(displayedBudget.spendAmount)}</Text>
+                  </View>
+                  <View style={styles.webBudgetRow}>
+                    <Text style={styles.webBudgetLabel}>Share</Text>
+                    <Text style={styles.webBudgetValue}>{formatMoney(displayedBudget.shareAmount)}</Text>
+                  </View>
+                </View>
+                <View style={styles.mobileGoalTrack}>
+                  <View style={[styles.mobileGoalTrackFill, styles.webBudgetSaveFill, { width: hasSavedBudget ? "100%" : "50%" }]} />
+                </View>
+                <View style={styles.webBudgetActions}>
+                  <Pressable style={[styles.webBudgetButton, isSubmitting && styles.disabledButton]} onPress={() => handleSaveBudgetPreset("smart")} disabled={isSubmitting}>
+                    <Text style={styles.webBudgetButtonText}>Save 50/30/20</Text>
+                  </Pressable>
+                  <Pressable style={[styles.webBudgetButtonAlt, isSubmitting && styles.disabledButton]} onPress={() => handleSaveBudgetPreset("saveMore")} disabled={isSubmitting}>
+                    <Text style={styles.webBudgetButtonAltText}>Save More</Text>
+                  </Pressable>
+                  {hasSavedBudget ? (
+                    <Pressable style={[styles.webBudgetButtonGhost, isSubmitting && styles.disabledButton]} onPress={handleClearBudget} disabled={isSubmitting}>
+                      <Text style={styles.webBudgetButtonGhostText}>Clear</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+                <Text style={styles.webWalletStat}>{hasSavedBudget ? `${budget?.title ?? "Budget"} saved for this month.` : "Try 50% saving, 30% spending, 20% sharing."}</Text>
               </View>
             </View>
 
-            <View style={styles.webWalletBottomGrid}>
+            <View style={styles.webWalletTransactionsGrid}>
               <View style={styles.webCard}>
                 <View style={styles.webRowBetween}>
                   <Text style={styles.webCardTitle}>Recent Transactions</Text>
@@ -1237,86 +1509,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                   </View>
                 ))}
               </View>
-              <View style={styles.webWalletRightCol}>
-                <View style={styles.webCard}>
-                  <View style={styles.webRowBetween}>
-                    <Text style={styles.webCardTitle}>Withdraw Money</Text>
-                    <Pressable style={styles.webMiniBtn} onPress={() => setShowWithdrawForm((prev) => !prev)}>
-                      <Text style={styles.webMiniBtnText}>{showWithdrawForm ? "Close" : "Withdraw"}</Text>
-                    </Pressable>
-                  </View>
-                  {showWithdrawForm ? (
-                    <View style={styles.withdrawForm}>
-                      <Text style={styles.rowMeta}>Where do you want to withdraw from?</Text>
-                      <View style={styles.choiceRow}>
-                        <Pressable
-                          style={[styles.choicePill, withdrawSource === "wallet" ? styles.choicePillActive : null]}
-                          onPress={() => setWithdrawSource("wallet")}
-                        >
-                          <Text style={[styles.choiceText, withdrawSource === "wallet" ? styles.choiceTextActive : null]}>My Account</Text>
-                        </Pressable>
-                        <Pressable
-                          style={[styles.choicePill, withdrawSource === "goal" ? styles.choicePillActive : null]}
-                          onPress={() => {
-                            setWithdrawSource("goal");
-                            if (!withdrawGoalId && withdrawableCompletedGoals[0]) setWithdrawGoalId(withdrawableCompletedGoals[0].id);
-                          }}
-                        >
-                          <Text style={[styles.choiceText, withdrawSource === "goal" ? styles.choiceTextActive : null]}>Completed Goal</Text>
-                        </Pressable>
-                      </View>
-                      {withdrawSource === "goal" ? (
-                        <View style={styles.withdrawGoalList}>
-                          {withdrawableCompletedGoals.map((goal) => (
-                            <Pressable
-                              key={goal.id}
-                              style={[styles.withdrawGoalOption, withdrawGoalId === goal.id ? styles.withdrawGoalOptionActive : null]}
-                              onPress={() => {
-                                setWithdrawGoalId(goal.id);
-                                setWithdrawAmount(String(Math.round(goal.currentAmount)));
-                              }}
-                            >
-                              <Text style={styles.rowMain}>{goal.title}</Text>
-                              <Text style={styles.rowMeta}>{formatMoney(goal.currentAmount)} saved</Text>
-                            </Pressable>
-                          ))}
-                          {withdrawableCompletedGoals.length === 0 ? (
-                            <Text style={styles.rowMeta}>No completed goals have money left to withdraw.</Text>
-                          ) : null}
-                        </View>
-                      ) : null}
-                      <AppInput
-                        label="Amount (UGX)"
-                        value={withdrawAmount}
-                        onChangeText={setWithdrawAmount}
-                        keyboardType="numeric"
-                        placeholder="10000"
-                      />
-                      <AppInput
-                        label="Reason"
-                        value={withdrawDescription}
-                        onChangeText={setWithdrawDescription}
-                        placeholder="Optional"
-                      />
-                      <AppButton title="Submit Withdrawal" loading={isSubmitting} onPress={handleCreateWithdrawal} />
-                    </View>
-                  ) : (
-                    <Text style={styles.rowMeta}>Withdraw from your account, or from a completed savings goal.</Text>
-                  )}
-                </View>
-                <View style={styles.webCard}>
-                  <Text style={styles.webCardTitle}>Want to save more?</Text>
-                  <Text style={styles.rowMeta}>Create a savings goal and watch your money grow.</Text>
-                  <Pressable style={styles.webMiniBtn} onPress={() => setTab("savings")}>
-                    <Text style={styles.webMiniBtnText}>Create a Goal</Text>
-                  </Pressable>
-                </View>
-                <View style={styles.webCard}>
-                  <Text style={styles.webCardTitle}>Smart Money Tip</Text>
-                  <Image source={walletIllustration5} style={styles.webSideImage} resizeMode="contain" />
-                  <Text style={styles.rowMeta}>Save a little today for something you'll love tomorrow!</Text>
-                </View>
-              </View>
+
             </View>
           </View>
         ) : null}
@@ -1538,7 +1731,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
         {!isLoading && tab === "savings" && isMobile ? (
           <View style={styles.sectionWrap}>
             <View style={styles.mobileSectionHeader}>
-              <Text style={styles.mobileSectionTitle}>My Goals</Text>
+              <Text style={styles.mobileSectionTitle}>My Active Goals</Text>
               <Pressable onPress={() => setTab("actions")}>
                 <Text style={styles.mobileSectionLink}>Add Goal</Text>
               </Pressable>
@@ -1685,7 +1878,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                 </View>
                 <View style={[styles.webCard, styles.achievementCard]}>
                   <Text style={styles.webCardTitle}>Goal Achievement</Text>
-                  <Text style={styles.achievementIcon}>{goldenStarCount > 0 ? "★" : "◎"}</Text>
+                  <Text style={styles.achievementIcon}>{goldenStarCount > 0 ? "\u2605" : "\u25CE"}</Text>
                   <Text style={styles.rowMain}>
                     {goldenStarCount > 0 ? `${goldenStarCount} golden star${goldenStarCount === 1 ? "" : "s"} earned` : "Complete a goal to earn a star"}
                   </Text>
@@ -1764,12 +1957,12 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
               {chores.filter((chore) => chore.status === "assigned").map((chore) => (
                 <View key={chore.id} style={styles.mobileChoreRow}>
                   <View style={styles.mobileLessonIconWrap}>
-                    <Text style={styles.mobileLessonIcon}>🛏️</Text>
+                    <Text style={styles.mobileLessonIcon}>{"\u{1F4CB}"}</Text>
                   </View>
                   <View style={styles.mobileContinueMain}>
                     <Text style={styles.rowMain}>{chore.title}</Text>
                     <Text style={styles.rowMeta}>{chore.description ?? "Complete this task and earn rewards."}</Text>
-                    <Text style={styles.mobileAmountPositive}>🪙 {formatMoney(chore.rewardAmount)}</Text>
+                    <Text style={styles.mobileAmountPositive}>{"\u{1F4B0}"} {formatMoney(chore.rewardAmount)}</Text>
                   </View>
                   <View style={styles.mobileChoreActions}>
                     <Text style={styles.mobileDueTag}>{chore.dueDate ? "Due today" : "No due date"}</Text>
@@ -1789,12 +1982,12 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
               {chores.filter((chore) => chore.status === "completed").map((chore) => (
                 <View key={chore.id} style={styles.mobileChoreRow}>
                   <View style={styles.mobileLessonIconWrap}>
-                    <Text style={styles.mobileLessonIcon}>✅</Text>
+                    <Text style={styles.mobileLessonIcon}>{"\u{1F4CB}"}</Text>
                   </View>
                   <View style={styles.mobileContinueMain}>
                     <Text style={styles.rowMain}>{chore.title}</Text>
                     <Text style={styles.rowMeta}>{chore.description ?? "Completed chore"}</Text>
-                    <Text style={styles.mobileAmountPositive}>🪙 {formatMoney(chore.rewardAmount)}</Text>
+                    <Text style={styles.mobileAmountPositive}>{"\u{1F4B0}"} {formatMoney(chore.rewardAmount)}</Text>
                   </View>
                   <View style={styles.mobileChoreActions}>
                     <Text style={styles.tableCellSuccess}>Completed</Text>
@@ -1999,7 +2192,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                         <Text style={styles.mobileProfileNotifBadgeText}>3</Text>
                       </View>
                     ) : null}
-                    <Text style={styles.mobileProfileMenuArrow}>›</Text>
+                    <Text style={styles.mobileProfileMenuArrow}>{"\u203A"}</Text>
                   </View>
                 </Pressable>
               ))}
@@ -2055,7 +2248,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                         <Text style={styles.rowMain}>{item}</Text>
                         <Text style={styles.rowMeta}>Manage this setting</Text>
                       </View>
-                      <Text style={styles.webProfileArrow}>›</Text>
+                      <Text style={styles.webProfileArrow}>{"\u203A"}</Text>
                     </View>
                   ))}
                 </View>
@@ -2115,7 +2308,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
             ]}
             onPress={() => setTab("home")}
           >
-            <Text style={[styles.mobileBottomNavIcon, tab === "home" ? styles.mobileBottomNavTextActive : null]}>⌂</Text>
+            <Image source={moneyIllustration1} style={styles.mobileBottomNavImage} resizeMode="cover" />
             <Text style={[styles.mobileBottomNavText, tab === "home" ? styles.mobileBottomNavTextActive : null]}>Home</Text>
           </AnimatedTileButton>
           <AnimatedTileButton
@@ -2126,7 +2319,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
             ]}
             onPress={() => setTab("learn")}
           >
-            <Text style={[styles.mobileBottomNavIcon, tab === "learn" ? styles.mobileBottomNavTextActive : null]}>◍</Text>
+            <Image source={learnIllustration1} style={styles.mobileBottomNavImage} resizeMode="cover" />
             <Text style={[styles.mobileBottomNavText, tab === "learn" ? styles.mobileBottomNavTextActive : null]}>Learn</Text>
           </AnimatedTileButton>
           <AnimatedTileButton
@@ -2137,7 +2330,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
             ]}
             onPress={() => setTab("savings")}
           >
-            <Text style={[styles.mobileBottomNavIcon, tab === "savings" ? styles.mobileBottomNavTextActive : null]}>◎</Text>
+            <Image source={goalIllustration1} style={styles.mobileBottomNavImage} resizeMode="cover" />
             <Text style={[styles.mobileBottomNavText, tab === "savings" ? styles.mobileBottomNavTextActive : null]}>Goals</Text>
           </AnimatedTileButton>
           <AnimatedTileButton
@@ -2148,7 +2341,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
             ]}
             onPress={() => setTab("chores")}
           >
-            <Text style={[styles.mobileBottomNavIcon, tab === "chores" ? styles.mobileBottomNavTextActive : null]}>✓</Text>
+            <Image source={choreIllustration1} style={styles.mobileBottomNavImage} resizeMode="cover" />
             <Text style={[styles.mobileBottomNavText, tab === "chores" ? styles.mobileBottomNavTextActive : null]}>Chores</Text>
           </AnimatedTileButton>
           <AnimatedTileButton
@@ -2159,7 +2352,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
             ]}
             onPress={() => setTab("settings")}
           >
-            <Text style={[styles.mobileBottomNavIcon, tab === "settings" ? styles.mobileBottomNavTextActive : null]}>⚙</Text>
+            <Image source={learnIllustration3} style={styles.mobileBottomNavImage} resizeMode="cover" />
             <Text style={[styles.mobileBottomNavText, tab === "settings" ? styles.mobileBottomNavTextActive : null]}>Profile</Text>
           </AnimatedTileButton>
         </View>
@@ -2326,7 +2519,7 @@ const styles = StyleSheet.create({
   },
   title: {
     color: theme.colors.text,
-    fontSize: 28,
+    fontSize: 22,
     fontWeight: "800",
   },
   titleMobile: {
@@ -2418,7 +2611,7 @@ const styles = StyleSheet.create({
     borderRightWidth: 1,
     borderRightColor: "#eceef7",
     backgroundColor: "#fff",
-    paddingVertical: 14,
+    paddingVertical: 12,
     paddingHorizontal: 4,
     alignItems: "center",
     gap: 6,
@@ -2680,6 +2873,44 @@ const styles = StyleSheet.create({
   mobileContinueTrack: {
     flex: 1,
   },
+  homeLearningCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#e6e9f5",
+    backgroundColor: "#ffffff",
+    padding: 12,
+    gap: 12,
+  },
+  homeLearningImages: {
+    flexDirection: "row",
+    gap: 8,
+    alignItems: "center",
+  },
+  homeLearningImage: {
+    flex: 1,
+    minWidth: 0,
+    height: 72,
+    borderRadius: 10,
+  },
+  homeLearningImageRaised: {
+    height: 84,
+  },
+  homeLearningContent: {
+    gap: 6,
+  },
+  homeLearningButton: {
+    alignSelf: "flex-start",
+    borderRadius: 10,
+    backgroundColor: "#5f46f1",
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    marginTop: 4,
+  },
+  homeLearningButtonText: {
+    color: "#ffffff",
+    fontWeight: "800",
+    fontSize: 12,
+  },
   mobileLessonRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -2906,33 +3137,33 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   webSidebar: {
-    width: 220,
-    borderRadius: 14,
-    backgroundColor: "#10174f",
-    padding: 12,
-    gap: 12,
+    width: 212,
+    borderRadius: 20,
+    backgroundColor: "#5b35dc",
+    padding: 10,
+    gap: 8,
   },
   webBrandWrap: {
-    paddingBottom: 8,
+    paddingBottom: 6,
     borderBottomWidth: 1,
-    borderBottomColor: "#2a3276",
+    borderBottomColor: "#7c6bff",
   },
   webSidebarProfile: {
     alignItems: "center",
-    paddingTop: 4,
-    paddingBottom: 14,
+    paddingTop: 2,
+    paddingBottom: 8,
     borderBottomWidth: 1,
-    borderBottomColor: "#2a3276",
-    gap: 10,
+    borderBottomColor: "#7c6bff",
+    gap: 6,
   },
   webSidebarAvatarOuter: {
-    width: 76,
-    height: 76,
-    borderRadius: 38,
+    width: 58,
+    height: 58,
+    borderRadius: 29,
     borderWidth: 3,
-    borderColor: "#7c8cff",
+    borderColor: "#ffd54a",
     overflow: "hidden",
-    backgroundColor: "#1a2260",
+    backgroundColor: "#ffdc5e",
   },
   webSidebarAvatarImage: {
     width: "100%",
@@ -2944,49 +3175,52 @@ const styles = StyleSheet.create({
     height: "100%",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#2a3485",
+    backgroundColor: "#ffdc5e",
   },
   webSidebarAvatarInitial: {
     color: "#eaf0ff",
-    fontSize: 28,
+    fontSize: 22,
     fontWeight: "800",
   },
   webSidebarChildName: {
     color: "#eaf0ff",
-    fontSize: 15,
+    fontSize: 13,
     fontWeight: "800",
     textAlign: "center",
-    lineHeight: 20,
+    lineHeight: 17,
     paddingHorizontal: 4,
   },
   webBrand: {
-    color: "#eaf0ff",
-    fontWeight: "800",
-    fontSize: 32,
+    color: "#fff7b0",
+    fontWeight: "900",
+    fontSize: 26,
   },
   webNavList: {
-    gap: 6,
+    gap: 4,
     flex: 1,
   },
   webNavItem: {
-    borderRadius: 12,
+    borderRadius: 14,
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    backgroundColor: "transparent",
+    gap: 8,
+    paddingHorizontal: 9,
+    paddingVertical: 7,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
+    backgroundColor: "rgba(255,255,255,0.08)",
   },
   webNavItemActive: {
-    backgroundColor: "#5f46f1",
+    backgroundColor: "#ff8a1f",
+    borderColor: "#ffd54a",
   },
   webNavIconPill: {
-    width: 30,
-    height: 30,
-    borderRadius: 10,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#202b75",
+    backgroundColor: "#6e54e8",
   },
   webNavIconPillActive: {
     backgroundColor: "#ffffff",
@@ -2997,8 +3231,8 @@ const styles = StyleSheet.create({
     fontWeight: "900",
   },
   webNavIconEmoji: {
-    fontSize: 17,
-    lineHeight: 20,
+    fontSize: 14,
+    lineHeight: 16,
     textAlign: "center",
   },
   webNavIconActive: {
@@ -3008,7 +3242,7 @@ const styles = StyleSheet.create({
     flex: 1,
     color: "#d7deff",
     fontWeight: "700",
-    fontSize: 16,
+    fontSize: 13,
   },
   webNavTextActive: {
     color: "#fff",
@@ -3035,7 +3269,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#3b468f",
     backgroundColor: "#171f62",
-    paddingVertical: 10,
+    paddingVertical: 8,
     alignItems: "center",
   },
   webLogoutBtnText: {
@@ -3155,6 +3389,76 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "700",
   },
+  badgesSection: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#fde68a",
+    backgroundColor: "rgba(255, 251, 235, 0.96)",
+    padding: 14,
+    gap: 12,
+    zIndex: 2,
+  },
+  badgesSectionMobile: {
+    marginBottom: 4,
+  },
+  badgesTitle: {
+    color: "#7c2d12",
+    fontSize: 18,
+    fontWeight: "900",
+  },
+  badgesSubtitle: {
+    color: "#9a5b16",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  badgesSparkle: {
+    fontSize: 24,
+  },
+  badgesRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  badgeTile: {
+    flexGrow: 1,
+    flexBasis: 150,
+    minHeight: 72,
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  badgeTileUnlocked: {
+    backgroundColor: "#ffffff",
+    borderColor: "#facc15",
+  },
+  badgeTileLocked: {
+    backgroundColor: "#f8fafc",
+    borderColor: "#e2e8f0",
+    opacity: 0.72,
+  },
+  badgeIcon: {
+    fontSize: 28,
+  },
+  badgeIconLocked: {
+    opacity: 0.38,
+  },
+  badgeTextWrap: {
+    flex: 1,
+    gap: 2,
+  },
+  badgeTitleText: {
+    color: "#1f2937",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  badgeDescription: {
+    color: "#64748b",
+    fontSize: 11,
+    fontWeight: "700",
+  },
   webCard: {
     borderRadius: 14,
     borderWidth: 1,
@@ -3246,7 +3550,7 @@ const styles = StyleSheet.create({
   },
   webWalletTopGrid: {
     flexDirection: "row",
-    gap: 10,
+    gap: 12,
     alignItems: "stretch",
   },
   webTrendChart: {
@@ -3269,11 +3573,16 @@ const styles = StyleSheet.create({
     gap: 10,
     alignItems: "stretch",
   },
+  webWalletTransactionsGrid: {
+    gap: 10,
+    alignItems: "stretch",
+  },
   webWalletRightCol: {
     width: 280,
     gap: 10,
   },
   webTxHeader: {
+    width: "100%",
     flexDirection: "row",
     borderBottomWidth: 1,
     borderBottomColor: "#eef1f8",
@@ -3286,6 +3595,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   webTxRow: {
+    width: "100%",
     flexDirection: "row",
     borderBottomWidth: 1,
     borderBottomColor: "#f2f4fb",
@@ -3548,29 +3858,32 @@ const styles = StyleSheet.create({
     left: 10,
     right: 10,
     bottom: 8,
-    height: 68,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: "#fff",
+    minHeight: 76,
+    borderRadius: 24,
+    borderWidth: 2,
+    borderColor: "#ffd54a",
+    backgroundColor: "#ffffff",
     flexDirection: "row",
     justifyContent: "space-around",
     alignItems: "center",
   },
   mobileBottomNavItem: {
-    borderRadius: 12,
+    borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
     gap: 3,
     paddingHorizontal: 8,
-    paddingVertical: 6,
-    minWidth: 56,
+    paddingVertical: 7,
+    minWidth: 58,
+    borderWidth: 1,
+    borderColor: "#f2e8ff",
   },
   mobileBottomNavItemActive: {
-    backgroundColor: "#ecebff",
+    backgroundColor: "#fff0c2",
+    borderColor: "#ffb84d",
   },
   mobileBottomNavIcon: {
-    fontSize: 15,
+    fontSize: 20,
     color: theme.colors.muted,
   },
   mobileBottomNavText: {
@@ -3659,4 +3972,218 @@ const styles = StyleSheet.create({
   choiceTextActive: {
     color: theme.colors.primary,
   },
+  mobileBalanceMascot: {
+    position: "absolute",
+    right: -8,
+    bottom: -8,
+    width: 126,
+    height: 126,
+    opacity: 0.92,
+  },
+  mobileServiceItemMoney: { backgroundColor: "#dcfce7" },
+  mobileServiceItemRequest: { backgroundColor: "#e0f2fe" },
+  mobileServiceItemGoals: { backgroundColor: "#fef3c7" },
+  mobileServiceItemChores: { backgroundColor: "#fae8ff" },
+  kidCardBlue: {
+    backgroundColor: "#f1fbff",
+    borderColor: "#bfeeff",
+  },
+  kidCardYellow: {
+    backgroundColor: "#fff8d7",
+    borderColor: "#ffe08a",
+  },
+  kidCardPink: {
+    backgroundColor: "#fff1f7",
+    borderColor: "#ffc9df",
+  },
+  mobileGoalArt: {
+    width: 72,
+    height: 72,
+    borderRadius: 16,
+  },
+  mobileTipImage: {
+    width: "100%",
+    height: 94,
+    borderRadius: 14,
+  },
+  webWalletHeroPlayful: {
+    shadowColor: "#6a43f4",
+    shadowOpacity: 0.18,
+    shadowRadius: 18,
+  },
+  webCardGoalFun: {
+    backgroundColor: "#f4edff",
+    borderColor: "#d8c9ff",
+    overflow: "hidden",
+  },
+  webCardLearnFun: {
+    backgroundColor: "#fff8d7",
+    borderColor: "#ffe08a",
+  },
+  webCardActionFun: {
+    backgroundColor: "#e7f8ff",
+    borderColor: "#bfeeff",
+  },
+  webCardChoreFun: {
+    backgroundColor: "#fff1f7",
+    borderColor: "#ffc9df",
+  },
+  webCardTipFun: {
+    backgroundColor: "#f0fdf4",
+    borderColor: "#bbf7d0",
+  },
+  webCardCornerImage: {
+    position: "absolute",
+    right: 10,
+    bottom: 10,
+    width: 76,
+    height: 76,
+    borderRadius: 18,
+    opacity: 0.28,
+  },
+  webAvatarTrail: {
+    flexDirection: "row",
+    gap: 6,
+    marginTop: 2,
+  },
+  webAvatarTrailImage: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    borderWidth: 2,
+    borderColor: "#fff7b0",
+  },
+  mobileHeaderArt: {
+    width: 52,
+    height: 52,
+    borderRadius: 18,
+    borderWidth: 2,
+    borderColor: "#ffffff",
+    marginLeft: "auto",
+    marginRight: 8,
+  },
+  webTopArt: {
+    width: 54,
+    height: 54,
+    borderRadius: 18,
+    borderWidth: 2,
+    borderColor: "#ffffff",
+  },
+  mobileBottomNavImage: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 2,
+    borderColor: "#ffffff",
+  },
+  webWithdrawHero: {
+    backgroundColor: "#ff8a1f",
+    borderColor: "#ffe08a",
+  },
+  webWithdrawToggle: {
+    borderRadius: 999,
+    backgroundColor: "#ffffff",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  webWithdrawToggleText: {
+    color: "#9a3412",
+    fontWeight: "900",
+    fontSize: 12,
+  },
+  webWithdrawImage: {
+    position: "absolute",
+    right: 10,
+    bottom: 10,
+    width: 118,
+    height: 118,
+    opacity: 0.28,
+  },
+  webBudgetHero: {
+    backgroundColor: "#22c55e",
+    borderColor: "#bbf7d0",
+  },
+  webBudgetIcon: {
+    width: 58,
+    height: 58,
+    borderRadius: 18,
+    borderWidth: 2,
+    borderColor: "#ffffff",
+  },
+  webBudgetRows: {
+    gap: 8,
+  },
+  webBudgetRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.22)",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  webBudgetLabel: {
+    color: "#ecfdf5",
+    fontWeight: "900",
+    fontSize: 13,
+  },
+  webBudgetValue: {
+    color: "#ffffff",
+    fontWeight: "900",
+    fontSize: 13,
+  },
+  webBudgetSaveFill: {
+    backgroundColor: "#facc15",
+  },
+  webBudgetActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  webBudgetButton: {
+    backgroundColor: "#facc15",
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  webBudgetButtonAlt: {
+    backgroundColor: "#ffffff",
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  webBudgetButtonGhost: {
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.85)",
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  webBudgetButtonText: {
+    color: "#14532d",
+    fontWeight: "900",
+    fontSize: 12,
+  },
+  webBudgetButtonAltText: {
+    color: "#166534",
+    fontWeight: "900",
+    fontSize: 12,
+  },
+  webBudgetButtonGhostText: {
+    color: "#ffffff",
+    fontWeight: "900",
+    fontSize: 12,
+  },
+  disabledButton: {
+    opacity: 0.55,
+  },
 });
+
+
+
+
+
+
+
+
+

@@ -16,15 +16,28 @@ export async function authMiddleware(req: AuthenticatedRequest, res: Response, n
     return res.status(401).json({ error: "Unauthorized" });
   }
 
-  const { data, error } = await supabase.auth.getUser(token);
-  if (error || !data.user?.email) {
-    return res.status(401).json({ error: "Unauthorized" });
+  let authUserId = "";
+  try {
+    const { data, error } = await supabase.auth.getUser(token);
+    if (error || !data.user?.email) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    authUserId = data.user.id;
+  } catch (error) {
+    console.error("Supabase auth lookup failed:", error);
+    return res.status(503).json({ error: "Authentication service unavailable. Please try again." });
   }
 
-  const appUser = await prisma.user.findUnique({
-    where: { id: data.user.id },
-    select: { id: true, email: true, role: true, isActive: true },
-  });
+  let appUser: { id: string; email: string; role: UserRole; isActive: boolean } | null = null;
+  try {
+    appUser = await prisma.user.findUnique({
+      where: { id: authUserId },
+      select: { id: true, email: true, role: true, isActive: true },
+    });
+  } catch (error) {
+    console.error("Database auth lookup failed:", error);
+    return res.status(503).json({ error: "Database temporarily unavailable. Please try again." });
+  }
   if (!appUser) {
     return res.status(401).json({ error: "User profile not found" });
   }
