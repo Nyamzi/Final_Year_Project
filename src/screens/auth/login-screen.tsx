@@ -6,7 +6,7 @@ import { AppButton, AppInput } from "../../ui/controls";
 import { theme } from "../../ui/theme";
 
 type LoginScreenProps = {
-  onLoginSuccess: (session: { email: string; role: UserRole }) => void;
+  onLoginSuccess: (session: { email: string; role: UserRole; fullName: string | null; phoneNumber: string | null; nin: string | null; profileImageUrl: string | null }) => void;
   onGoToRegister: () => void;
 };
 
@@ -17,7 +17,7 @@ export function LoginScreen({ onLoginSuccess, onGoToRegister }: LoginScreenProps
   const [googleLoading, setGoogleLoading] = useState(false);
   const [error, setError] = useState("");
 
-  async function completeLogin(data: { role: UserRole; token?: string }, nextEmail: string) {
+  async function completeLogin(data: { role: UserRole; token?: string; email?: string; fullName?: string | null; phoneNumber?: string | null; nin?: string | null; profileImageUrl?: string | null }, nextEmail: string) {
     if (data.role === "admin" && Platform.OS !== "web") {
       setAuthToken(null);
       try {
@@ -30,7 +30,7 @@ export function LoginScreen({ onLoginSuccess, onGoToRegister }: LoginScreenProps
     }
 
     setAuthToken(data.token ?? null);
-    onLoginSuccess({ email: nextEmail, role: data.role });
+    onLoginSuccess({ email: data.email ?? nextEmail, role: data.role, fullName: data.fullName ?? null, phoneNumber: data.phoneNumber ?? null, nin: data.nin ?? null, profileImageUrl: data.profileImageUrl ?? null });
   }
 
   async function handleLogin() {
@@ -228,3 +228,5 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 });
+
+

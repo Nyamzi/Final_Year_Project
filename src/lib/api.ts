@@ -18,12 +18,19 @@ export type RegisterRequest = {
   email: string;
   password: string;
   confirmPassword: string;
+  sex: "male" | "female";
+  profileImageUrl: string;
 };
 
 export type LoginResponse = {
   message: string;
   role: UserRole;
   token?: string;
+  email?: string;
+  fullName?: string | null;
+  phoneNumber?: string | null;
+  nin?: string | null;
+  profileImageUrl?: string | null;
 };
 
 export type AuthMeResponse = {
@@ -31,6 +38,11 @@ export type AuthMeResponse = {
     userId: string;
     email: string;
     role: UserRole;
+    fullName: string | null;
+    phoneNumber: string | null;
+    nin: string | null;
+    sex: "male" | "female" | null;
+    profileImageUrl: string | null;
   };
 };
 
@@ -91,6 +103,7 @@ export type ParentChildSummary = {
   nickname: string;
   age: number;
   email: string;
+  profileImageUrl: string | null;
   wallet: WalletSummary | null;
   activeSpendingLimit: number | null;
   activeSpendingLimitPeriod: "weekly" | "monthly" | "quarterly" | null;
@@ -156,6 +169,8 @@ export type ParentProfile = {
   nin: string;
   phoneNumber: string;
   email: string;
+  sex: "male" | "female" | null;
+  profileImageUrl: string | null;
 };
 
 export type AdminAnalytics = {
@@ -502,6 +517,11 @@ export async function signInWithGoogle() {
     message: "Logged in",
     role: me.user.role,
     token: (await getAuthToken()) ?? undefined,
+    email: me.user.email,
+    fullName: me.user.fullName,
+    phoneNumber: me.user.phoneNumber,
+    nin: me.user.nin,
+    profileImageUrl: me.user.profileImageUrl,
   } satisfies LoginResponse;
 }
 export async function apiSendPasswordReset(email: string) {
@@ -543,6 +563,11 @@ export async function apiVerifyOtp(input: { email: string; token: string }) {
     message: "Logged in",
     role: me.user.role,
     token: data.session.access_token,
+    email: me.user.email,
+    fullName: me.user.fullName,
+    phoneNumber: me.user.phoneNumber,
+    nin: me.user.nin,
+    profileImageUrl: me.user.profileImageUrl,
   } satisfies LoginResponse;
 }
 
@@ -579,6 +604,11 @@ export async function apiLogin(input: LoginRequest) {
     message: "Logged in",
     role: me.user.role,
     token: data.session.access_token,
+    email: me.user.email,
+    fullName: me.user.fullName,
+    phoneNumber: me.user.phoneNumber,
+    nin: me.user.nin,
+    profileImageUrl: me.user.profileImageUrl,
   } satisfies LoginResponse;
 }
 
@@ -714,6 +744,7 @@ export function apiCreateParentChild(input: {
   password: string;
   nickname: string;
   age: number;
+  profileImageUrl: string;
 }) {
   return request<{ message: string; childId: string }>("/api/parent/children", {
     method: "POST",
@@ -809,6 +840,30 @@ export function apiUpdateParentAccount(input: ParentProfile) {
   return request<{ message: string; profile: ParentProfile }>("/api/parent/account", {
     method: "PATCH",
     body: JSON.stringify(input),
+  });
+}
+
+export function apiDeactivateParentAccount() {
+  return request<{ message: string }>("/api/parent/account/deactivate", {
+    method: "PATCH",
+  });
+}
+
+export function apiDeleteParentAccount() {
+  return request<{ message: string }>("/api/parent/account", {
+    method: "DELETE",
+  });
+}
+
+export function apiDeactivateParentChild(childId: string) {
+  return request<{ message: string }>(`/api/parent/children/${encodeURIComponent(childId)}/deactivate`, {
+    method: "PATCH",
+  });
+}
+
+export function apiDeleteParentChild(childId: string) {
+  return request<{ message: string }>(`/api/parent/children/${encodeURIComponent(childId)}`, {
+    method: "DELETE",
   });
 }
 
@@ -1072,9 +1127,4 @@ export function apiLogDashboardAction(input: {
     body: JSON.stringify(input),
   });
 }
-
-
-
-
-
 

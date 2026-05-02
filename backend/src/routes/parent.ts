@@ -11,9 +11,10 @@ const router = Router();
 const createChildSchema = z.object({
   fullName: z.string().min(3).max(120),
   email: z.string().email(),
-  password: z.string().min(8),
+  password: z.string().min(8).regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).+$/),
   nickname: z.string().min(2),
   age: z.number().int().min(5).max(17),
+  profileImageUrl: z.string().min(1),
 });
 
 const choreSchema = z.object({
@@ -44,6 +45,8 @@ const profileSchema = z.object({
   nin: z.string().regex(/^[A-Za-z0-9]{8,20}$/),
   phoneNumber: z.string().regex(/^\+?[0-9]{10,15}$/),
   email: z.string().email(),
+  sex: z.enum(["male", "female"]).nullable().optional(),
+  profileImageUrl: z.string().nullable().optional(),
 });
 
 const parentPreferencesSchema = z.object({
@@ -201,6 +204,7 @@ router.get("/children", authMiddleware, requireRole("parent"), async (req: Authe
         nickname: child.nickname,
         age: child.age,
         email: child.childUser.email,
+        profileImageUrl: child.childUser.profileImageUrl,
         wallet: child.wallet
           ? {
               balance: Number(child.wallet.balance),
@@ -239,6 +243,7 @@ router.post("/children", authMiddleware, requireRole("parent"), async (req: Auth
         fullName: parsed.data.fullName,
         role: Role.child,
         parentId: req.user!.userId,
+        profileImageUrl: parsed.data.profileImageUrl,
       },
     });
     if (authError || !authData.user) {
@@ -253,6 +258,7 @@ router.post("/children", authMiddleware, requireRole("parent"), async (req: Auth
             id: authData.user.id,
             fullName: parsed.data.fullName,
             email: parsed.data.email,
+            profileImageUrl: parsed.data.profileImageUrl,
             role: Role.child,
           },
         });
@@ -282,6 +288,48 @@ router.post("/children", authMiddleware, requireRole("parent"), async (req: Auth
   }
 });
 
+router.patch("/children/:childId/deactivate", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
+  try {
+    const child = await prisma.childProfile.findFirst({
+      where: { id: req.params.childId, parentId: req.user!.userId },
+      include: { childUser: true },
+    });
+    if (!child) {
+      return res.status(404).json({ error: "Child not found" });
+    }
+
+    await prisma.user.update({
+      where: { id: child.childUserId },
+      data: { isActive: false, deactivatedAt: new Date() },
+    });
+    await getSupabaseAdmin().auth.admin.updateUserById(child.childUserId, { ban_duration: "876000h" });
+
+    res.json({ message: `${child.nickname} has been deactivated` });
+  } catch (error) {
+    console.error("Deactivate child error:", error);
+    res.status(500).json({ error: "Failed to deactivate child account" });
+  }
+});
+
+router.delete("/children/:childId", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
+  try {
+    const child = await prisma.childProfile.findFirst({
+      where: { id: req.params.childId, parentId: req.user!.userId },
+      include: { childUser: true },
+    });
+    if (!child) {
+      return res.status(404).json({ error: "Child not found" });
+    }
+
+    await prisma.user.delete({ where: { id: child.childUserId } });
+    await getSupabaseAdmin().auth.admin.deleteUser(child.childUserId);
+
+    res.json({ message: `${child.nickname} has been deleted` });
+  } catch (error) {
+    console.error("Delete child error:", error);
+    res.status(500).json({ error: "Failed to delete child account" });
+  }
+});
 // ─── Pending Transactions ─────────────────────────────────────────────────────
 
 router.get("/transactions/pending", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
@@ -1200,14 +1248,52 @@ router.patch("/account", authMiddleware, requireRole("parent"), async (req: Auth
         nin: normalizedNin,
         phoneNumber: parsed.data.phoneNumber,
         email: parsed.data.email,
+        sex: parsed.data.sex ?? undefined,
+        profileImageUrl: parsed.data.profileImageUrl ?? undefined,
       },
-      select: { fullName: true, nin: true, phoneNumber: true, email: true },
+      select: { fullName: true, nin: true, phoneNumber: true, email: true, sex: true, profileImageUrl: true },
     });
 
     res.json({ message: "Account details updated", profile: updatedUser });
   } catch (error) {
     console.error("Update account error:", error);
     res.status(500).json({ error: "Failed to update profile" });
+  }
+});
+
+
+router.patch("/account/deactivate", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
+  try {
+    await prisma.user.update({
+      where: { id: req.user!.userId },
+      data: { isActive: false, deactivatedAt: new Date() },
+    });
+    await getSupabaseAdmin().auth.admin.updateUserById(req.user!.userId, { ban_duration: "876000h" });
+    res.json({ message: "Parent account deactivated" });
+  } catch (error) {
+    console.error("Deactivate parent account error:", error);
+    res.status(500).json({ error: "Failed to deactivate parent account" });
+  }
+});
+
+router.delete("/account", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
+  try {
+    const parent = await prisma.user.findUnique({
+      where: { id: req.user!.userId },
+      include: { parentChildren: { select: { childUserId: true } } },
+    });
+    if (!parent) {
+      return res.status(404).json({ error: "Parent account not found" });
+    }
+
+    const authIds = [parent.id, ...parent.parentChildren.map((child) => child.childUserId)];
+    await prisma.user.delete({ where: { id: parent.id } });
+    await Promise.all(authIds.map((id) => getSupabaseAdmin().auth.admin.deleteUser(id).catch(() => null)));
+
+    res.json({ message: "Parent account deleted" });
+  } catch (error) {
+    console.error("Delete parent account error:", error);
+    res.status(500).json({ error: "Failed to delete parent account" });
   }
 });
 
@@ -2094,3 +2180,5 @@ router.post("/support-tickets", authMiddleware, requireRole("parent"), async (re
 });
 
 export default router;
+
+

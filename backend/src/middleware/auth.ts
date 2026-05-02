@@ -23,10 +23,13 @@ export async function authMiddleware(req: AuthenticatedRequest, res: Response, n
 
   const appUser = await prisma.user.findUnique({
     where: { id: data.user.id },
-    select: { id: true, email: true, role: true },
+    select: { id: true, email: true, role: true, isActive: true },
   });
   if (!appUser) {
     return res.status(401).json({ error: "User profile not found" });
+  }
+  if (!appUser.isActive) {
+    return res.status(403).json({ error: "Account is deactivated" });
   }
 
   req.user = {
@@ -55,5 +58,4 @@ export function errorHandler(
   console.error("Unhandled error:", err);
   res.status(500).json({ error: "Internal server error" });
 }
-
 

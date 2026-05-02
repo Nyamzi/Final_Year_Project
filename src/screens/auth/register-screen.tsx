@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Image, Pressable, StyleSheet, Text, View } from "react-native";
+import * as ImagePicker from "expo-image-picker";
 import { apiRegister } from "../../lib/api";
 import { AppButton, AppInput } from "../../ui/controls";
 import { theme } from "../../ui/theme";
@@ -14,6 +15,8 @@ export function RegisterScreen({ onGoToLogin, onRegistered }: RegisterScreenProp
   const [nin, setNin] = useState("");
   const [phoneNumber, setPhoneNumber] = useState("");
   const [email, setEmail] = useState("");
+  const [sex, setSex] = useState<"male" | "female" | "">("");
+  const [profileImageUrl, setProfileImageUrl] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -33,17 +36,54 @@ export function RegisterScreen({ onGoToLogin, onRegistered }: RegisterScreenProp
     return { label: "Strong", color: "#16a34a" };
   }, [password]);
 
+  async function handlePickProfileImage() {
+    setError("");
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      setError("Allow photo access to choose a profile picture.");
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.45,
+      base64: true,
+    });
+
+    if (result.canceled) return;
+    const asset = result.assets[0];
+    if (!asset.base64) {
+      setError("Could not read the selected image. Try another picture.");
+      return;
+    }
+
+    setProfileImageUrl(`data:${asset.mimeType ?? "image/jpeg"};base64,${asset.base64}`);
+  }
+
   async function handleRegister() {
     setLoading(true);
     setError("");
     setMessage("");
 
     try {
+      if (!profileImageUrl) {
+        setError("Choose a profile picture.");
+        return;
+      }
+      if (!sex) {
+        setError("Select male or female.");
+        return;
+      }
+
       await apiRegister({
         fullName,
         nin: nin.toUpperCase(),
         phoneNumber,
         email,
+        sex,
+        profileImageUrl,
         password,
         confirmPassword,
       });
@@ -72,6 +112,27 @@ export function RegisterScreen({ onGoToLogin, onRegistered }: RegisterScreenProp
         <AppInput label="National ID Number (NIN)" value={nin} onChangeText={setNin} placeholder="CM90003456789" autoCapitalize="characters" />
         <AppInput label="Phone Number" value={phoneNumber} onChangeText={setPhoneNumber} placeholder="+256700000000" keyboardType="phone-pad" />
         <AppInput label="Email Address" value={email} onChangeText={setEmail} placeholder="Enter your email" keyboardType="email-address" />
+
+        <View style={styles.photoRow}>
+          <View style={styles.photoPreview}>
+            {profileImageUrl ? <Image source={{ uri: profileImageUrl }} style={styles.photoImage} resizeMode="cover" /> : <Text style={styles.photoInitial}>+</Text>}
+          </View>
+          <View style={styles.photoActions}>
+            <Text style={styles.fieldLabel}>Profile Picture</Text>
+            <AppButton title={profileImageUrl ? "Change Picture" : "Choose Picture"} variant="ghost" onPress={handlePickProfileImage} />
+          </View>
+        </View>
+
+        <Text style={styles.fieldLabel}>Sex</Text>
+        <View style={styles.sexRow}>
+          <Pressable style={[styles.sexOption, sex === "male" && styles.sexOptionActive]} onPress={() => setSex("male")}>
+            <Text style={[styles.sexOptionText, sex === "male" && styles.sexOptionTextActive]}>Male</Text>
+          </Pressable>
+          <Pressable style={[styles.sexOption, sex === "female" && styles.sexOptionActive]} onPress={() => setSex("female")}>
+            <Text style={[styles.sexOptionText, sex === "female" && styles.sexOptionTextActive]}>Female</Text>
+          </Pressable>
+        </View>
+
         <AppInput label="Password" value={password} onChangeText={setPassword} placeholder="Create a strong password" secureTextEntry />
         <Text style={[styles.passwordStrength, { color: passwordStrength.color }]}>Password strength: {passwordStrength.label}</Text>
         <AppInput label="Confirm Password" value={confirmPassword} onChangeText={setConfirmPassword} placeholder="Re-enter your password" secureTextEntry />
@@ -134,6 +195,65 @@ const styles = StyleSheet.create({
     gap: 10,
     marginTop: 4,
   },
+  photoRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  photoPreview: {
+    width: 74,
+    height: 74,
+    borderRadius: 37,
+    borderWidth: 1,
+    borderColor: "#dbe3ff",
+    backgroundColor: "#eef4ff",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  photoImage: {
+    width: 74,
+    height: 74,
+    borderRadius: 37,
+  },
+  photoInitial: {
+    color: theme.colors.primary,
+    fontSize: 30,
+    fontWeight: "800",
+  },
+  photoActions: {
+    flex: 1,
+    gap: 6,
+  },
+  fieldLabel: {
+    color: theme.colors.text,
+    fontWeight: "700",
+    fontSize: 13,
+  },
+  sexRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  sexOption: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: "#dbe3ff",
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: "center",
+    backgroundColor: "#ffffff",
+  },
+  sexOptionActive: {
+    backgroundColor: theme.colors.primary,
+    borderColor: theme.colors.primary,
+  },
+  sexOptionText: {
+    color: theme.colors.text,
+    fontWeight: "700",
+  },
+  sexOptionTextActive: {
+    color: "#ffffff",
+  },
   passwordStrength: {
     fontSize: 12,
     fontWeight: "600",
@@ -161,4 +281,3 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 });
-

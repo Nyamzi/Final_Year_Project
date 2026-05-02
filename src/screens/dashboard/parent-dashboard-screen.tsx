@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { Animated, Easing, Pressable, ScrollView, Share, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { Animated, Easing, Image, Pressable, ScrollView, Share, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import * as ImagePicker from "expo-image-picker";
 import {
-  apiChangePassword,
+  apiDeactivateParentAccount,
+  apiDeleteParentAccount,
+  apiDeactivateParentChild,
+  apiDeleteParentChild,
   apiCreateParentAllowance,
   apiCreateParentChild,
   apiCreateParentChore,
@@ -33,7 +37,6 @@ import {
   apiLogDashboardAction,
   API_BASE_URL,
   apiUpdateParentAllowance,
-  apiUpdateParentAccount,
   apiUpdateParentPreferences,
   apiCreateParentSupportTicket,
   AdminLesson,
@@ -60,6 +63,10 @@ const MAIN_BG = "#eef0f8";
 
 type ParentDashboardScreenProps = {
   email: string;
+  fullName?: string | null;
+  phoneNumber?: string | null;
+  nin?: string | null;
+  profileImageUrl?: string | null;
   onLogout: () => void;
 };
 
@@ -165,7 +172,20 @@ function getInitials(name: string): string {
     .slice(0, 2);
 }
 
-export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreenProps) {
+function getPasswordStrength(password: string) {
+  let score = 0;
+  if (password.length >= 8) score += 1;
+  if (/[A-Z]/.test(password)) score += 1;
+  if (/[a-z]/.test(password)) score += 1;
+  if (/[0-9]/.test(password)) score += 1;
+  if (/[^A-Za-z0-9]/.test(password)) score += 1;
+
+  if (score <= 2) return { score, label: "Weak", color: "#dc2626" };
+  if (score <= 4) return { score, label: "Medium", color: "#d97706" };
+  return { score, label: "Strong", color: "#16a34a" };
+}
+
+export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profileImageUrl, onLogout }: ParentDashboardScreenProps) {
   const { width } = useWindowDimensions();
   const isMobile = width < 900;
 
@@ -174,7 +194,19 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
   const [showCreateChildForm, setShowCreateChildForm] = useState(false);
   const sidebarTranslateX = useMemo(() => new Animated.Value(-280), []);
   const backdropOpacity = useMemo(() => new Animated.Value(0), []);
-  const username = email.split("@")[0];
+  const username = fullName?.trim() || email.split("@")[0];
+  const [greetingTime, setGreetingTime] = useState(() => new Date());
+  const greeting = useMemo(() => {
+    const hour = greetingTime.getHours();
+    if (hour < 12) return "Good morning!";
+    if (hour < 17) return "Good Afternoon!";
+    return "Good evening!";
+  }, [greetingTime]);
+
+  useEffect(() => {
+    const timer = setInterval(() => setGreetingTime(new Date()), 60 * 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   const [children, setChildren] = useState<ParentChildSummary[]>([]);
   const [pending, setPending] = useState<ParentPendingTransaction[]>([]);
@@ -190,6 +222,8 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
   const [childFullName, setChildFullName] = useState("");
   const [childEmail, setChildEmail] = useState("");
   const [childPassword, setChildPassword] = useState("");
+  const [childCreateConfirmPassword, setChildCreateConfirmPassword] = useState("");
+  const [childProfileImageUrl, setChildProfileImageUrl] = useState("");
   const [childNickname, setChildNickname] = useState("");
   const [childAge, setChildAge] = useState("10");
 
@@ -255,14 +289,16 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
     totalDeposited: 0,
   });
 
-  const [accountFullName, setAccountFullName] = useState("");
-  const [accountNin, setAccountNin] = useState("");
-  const [accountPhone, setAccountPhone] = useState("");
+  const [accountFullName, setAccountFullName] = useState(fullName ?? "");
+  const [accountNin, setAccountNin] = useState(nin ?? "");
+  const [accountPhone, setAccountPhone] = useState(phoneNumber ?? "");
   const [accountEmail, setAccountEmail] = useState(email);
+  const accountDisplayName = accountFullName.trim() || fullName?.trim() || username;
+  const accountDisplayPhone = accountPhone.trim() || phoneNumber || "Not saved";
+  const accountDisplayEmail = accountEmail.trim() || email;
+  const accountDisplayNin = accountNin.trim() || nin || "Not saved";
 
-  const [currentPassword, setCurrentPassword] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
+
   const [passwordChildId, setPasswordChildId] = useState("");
   const [childNewPassword, setChildNewPassword] = useState("");
   const [childConfirmPassword, setChildConfirmPassword] = useState("");
@@ -288,6 +324,8 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
     () => children.reduce((sum, child) => sum + (child.wallet?.balance ?? 0), 0),
     [children]
   );
+
+  const childPasswordStrength = useMemo(() => getPasswordStrength(childPassword), [childPassword]);
 
   const completedChores = useMemo(
     () => chores.filter((c) => c.status === "completed").length,
@@ -439,13 +477,44 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
     }
   }
 
+  async function handlePickChildProfileImage() {
+    clearMessages();
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      setError("Allow photo access to choose a child profile picture.");
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.45,
+      base64: true,
+    });
+
+    if (result.canceled) return;
+    const asset = result.assets[0];
+    if (!asset?.base64) {
+      setError("Could not read that image. Try another picture.");
+      return;
+    }
+
+    setChildProfileImageUrl(`data:${asset.mimeType ?? "image/jpeg"};base64,${asset.base64}`);
+  }
+
   async function handleCreateChild() {
     const fullName = childFullName.trim();
     const nickname = childNickname.trim();
     const emailValue = childEmail.trim().toLowerCase();
     const passwordValue = childPassword.trim();
+    const confirmPasswordValue = childCreateConfirmPassword.trim();
     const age = Number(childAge);
 
+    if (!childProfileImageUrl) {
+      setError("Choose a child profile picture.");
+      return;
+    }
     if (fullName.length < 3) {
       setError("Enter the child's full name (at least 3 characters).");
       return;
@@ -454,16 +523,20 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
       setError("Enter a nickname (at least 2 characters).");
       return;
     }
+    if (!Number.isInteger(age) || age < 5 || age > 17) {
+      setError("Children must be aged 5 to 17 to use the app.");
+      return;
+    }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailValue)) {
       setError("Enter a valid child email address.");
       return;
     }
-    if (passwordValue.length < 8) {
-      setError("Child password must be at least 8 characters.");
+    if (childPasswordStrength.score < 5) {
+      setError("Use a strong child password with uppercase, lowercase, number, and symbol.");
       return;
     }
-    if (!Number.isFinite(age) || age < 5 || age > 17) {
-      setError("Child age must be between 5 and 17.");
+    if (passwordValue !== confirmPasswordValue) {
+      setError("Child password confirmation does not match.");
       return;
     }
 
@@ -476,11 +549,14 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
         password: passwordValue,
         nickname,
         age,
+        profileImageUrl: childProfileImageUrl,
       });
       setStatus(data.message);
       setChildFullName("");
       setChildEmail("");
       setChildPassword("");
+      setChildCreateConfirmPassword("");
+      setChildProfileImageUrl("");
       setChildNickname("");
       setChildAge("10");
       setShowCreateChildForm(false);
@@ -492,6 +568,73 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
     }
   }
 
+
+  async function handleDeactivateParentAccount() {
+    setSubmitting(true);
+    clearMessages();
+    try {
+      const data = await apiDeactivateParentAccount();
+      setStatus(data.message);
+      onLogout();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not deactivate parent account.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleDeleteParentAccount() {
+    setSubmitting(true);
+    clearMessages();
+    try {
+      const data = await apiDeleteParentAccount();
+      setStatus(data.message);
+      onLogout();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete parent account.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleDeactivateSelectedChild() {
+    if (!passwordChildId) {
+      setError("Select a child account first.");
+      return;
+    }
+
+    setSubmitting(true);
+    clearMessages();
+    try {
+      const data = await apiDeactivateParentChild(passwordChildId);
+      setStatus(data.message);
+      await loadParentData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not deactivate child account.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleDeleteSelectedChild() {
+    if (!passwordChildId) {
+      setError("Select a child account first.");
+      return;
+    }
+
+    setSubmitting(true);
+    clearMessages();
+    try {
+      const data = await apiDeleteParentChild(passwordChildId);
+      setStatus(data.message);
+      setPasswordChildId("");
+      await loadParentData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete child account.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
   async function handleDecision(id: string, decision: "approved" | "rejected") {
     setSubmitting(true);
     clearMessages();
@@ -653,44 +796,6 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
       await loadParentData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not update allowance.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function handleUpdateAccount() {
-    setSubmitting(true);
-    clearMessages();
-    try {
-      const data = await apiUpdateParentAccount({
-        fullName: accountFullName,
-        nin: accountNin,
-        phoneNumber: accountPhone,
-        email: accountEmail,
-      });
-      setStatus(data.message);
-      setAccountFullName(data.profile.fullName);
-      setAccountNin(data.profile.nin);
-      setAccountPhone(data.profile.phoneNumber);
-      setAccountEmail(data.profile.email);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not update account.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function handleChangePassword() {
-    setSubmitting(true);
-    clearMessages();
-    try {
-      const data = await apiChangePassword({ currentPassword, newPassword, confirmPassword });
-      setStatus(data.message);
-      setCurrentPassword("");
-      setNewPassword("");
-      setConfirmPassword("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not change password.");
     } finally {
       setSubmitting(false);
     }
@@ -1174,7 +1279,18 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
         ]}
       >
         <View style={[styles.sidebarBrand, isMobile && styles.sidebarBrandMobile]}>
-          <Text style={[styles.brandText, isMobile && styles.brandTextMobile]}>$ Kids Banking</Text>
+          <Text style={[styles.brandText, isMobile && styles.brandTextMobile]}>Kids Banking</Text>
+        </View>
+
+        <View style={styles.sidebarProfileBlock}>
+          <View style={styles.sidebarProfileImageWrap}>
+            {profileImageUrl ? (
+              <Image source={{ uri: profileImageUrl }} style={styles.sidebarProfileImage} resizeMode="cover" />
+            ) : (
+              <Text style={styles.sidebarProfileInitial}>{username[0]?.toUpperCase() ?? "?"}</Text>
+            )}
+          </View>
+          <Text style={styles.sidebarProfileName} numberOfLines={1}>{username}</Text>
         </View>
 
         <ScrollView
@@ -1219,18 +1335,6 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
             </View>
           </Pressable>
         </ScrollView>
-
-        <View style={[styles.sidebarFooter, isMobile && styles.sidebarFooterMobile]}>
-          <View style={styles.footerUserRow}>
-            <View style={styles.footerAvatar}>
-              <Text style={styles.footerAvatarText}>{username[0]?.toUpperCase() ?? "?"}</Text>
-            </View>
-            <View style={styles.footerUserInfo}>
-              <Text style={styles.footerUsername} numberOfLines={1}>{username}</Text>
-              <Text style={styles.footerEmail} numberOfLines={1}>{email}</Text>
-            </View>
-          </View>
-        </View>
       </Animated.View>
 
       {/* ── Main Content ── */}
@@ -1367,7 +1471,7 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                     <Text style={styles.desktopTitle}>Welcome back, {username}! 👋</Text>
                     <Text style={styles.desktopSubtitle}>Here's what's happening with your family accounts today.</Text>
                   </View>
-                  <Text style={styles.desktopGreeting}>Good morning!</Text>
+                  <Text style={styles.desktopGreeting}>{greeting}</Text>
                 </View>
 
                 <View style={styles.desktopQuickActions}>
@@ -1446,7 +1550,11 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                         <View key={child.id} style={styles.desktopChildCard}>
                           <View style={styles.childCardLeft}>
                             <View style={styles.childAvatar}>
-                              <Text style={styles.childAvatarText}>{getInitials(child.nickname)}</Text>
+                              {child.profileImageUrl ? (
+                                <Image source={{ uri: child.profileImageUrl }} style={styles.childAvatarImage} resizeMode="cover" />
+                              ) : (
+                                <Text style={styles.childAvatarText}>{getInitials(child.nickname)}</Text>
+                              )}
                             </View>
                           </View>
                           <View style={styles.childCardRight}>
@@ -1594,7 +1702,11 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                             <View style={styles.childrenCardHeader}>
                               <View style={styles.childrenCardHeaderLeft}>
                                 <View style={styles.childAvatar}>
-                                  <Text style={styles.childAvatarText}>{getInitials(child.nickname)}</Text>
+                                  {child.profileImageUrl ? (
+                                    <Image source={{ uri: child.profileImageUrl }} style={styles.childAvatarImage} resizeMode="cover" />
+                                  ) : (
+                                    <Text style={styles.childAvatarText}>{getInitials(child.nickname)}</Text>
+                                  )}
                                 </View>
                                 <View>
                                   <Text style={styles.childName}>{child.nickname}</Text>
@@ -1710,34 +1822,29 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                       </View>
                     </View>
 
-                    <View style={styles.desktopPanel}>
-                      <Text style={styles.sectionTitle}>Quick Actions</Text>
-                      <Pressable style={styles.childrenQuickItem} onPress={() => setShowCreateChildForm(true)}>
-                        <Text style={styles.childrenQuickText}>Add New Child</Text>
-                      </Pressable>
-                      <Pressable style={styles.childrenQuickItem} onPress={() => handleTabPress("limits")}>
-                        <Text style={styles.childrenQuickText}>Set Family Spending Limit</Text>
-                      </Pressable>
-                      <Pressable style={styles.childrenQuickItem} onPress={handleOpenCreateGoal}>
-                        <Text style={styles.childrenQuickText}>Create Savings Goal</Text>
-                      </Pressable>
-                      <Pressable style={styles.childrenQuickItem} onPress={() => handleOpenAssignChoreForm()}>
-                        <Text style={styles.childrenQuickText}>Assign Chore</Text>
-                      </Pressable>
-                      <Pressable style={styles.childrenQuickItem} onPress={() => handleTabPress("transactions")}>
-                        <Text style={styles.childrenQuickText}>View Transactions</Text>
-                      </Pressable>
-                    </View>
                   </View>
                 </View>
               </>
             ) : (
-              <View style={styles.childGrid}>
-                {children.map((child) => (
+              <>
+                <View style={[styles.childrenTopActions, styles.mobileChildrenActions]}>
+                  <Pressable style={styles.childrenTopBtn} onPress={() => setShowFundForm(true)}>
+                    <Text style={styles.childrenTopBtnText}>Fund Wallet</Text>
+                  </Pressable>
+                  <Pressable style={[styles.childrenTopBtn, styles.childrenTopBtnPrimary]} onPress={() => setShowCreateChildForm(true)}>
+                    <Text style={[styles.childrenTopBtnText, styles.childrenTopBtnTextPrimary]}>+ Add Child</Text>
+                  </Pressable>
+                </View>
+                <View style={styles.childGrid}>
+                  {children.map((child) => (
                   <View key={child.id} style={[styles.childCard, styles.childCardMobile, styles.mobileSurfaceCard]}>
                     <View style={styles.childCardLeft}>
                       <View style={styles.childAvatar}>
-                        <Text style={styles.childAvatarText}>{getInitials(child.nickname)}</Text>
+                        {child.profileImageUrl ? (
+                          <Image source={{ uri: child.profileImageUrl }} style={styles.childAvatarImage} resizeMode="cover" />
+                        ) : (
+                          <Text style={styles.childAvatarText}>{getInitials(child.nickname)}</Text>
+                        )}
                       </View>
                     </View>
                     <View style={styles.childCardRight}>
@@ -1758,51 +1865,71 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                     </View>
                   </View>
                 ))}
-                {children.length === 0 && <Text style={styles.emptyText}>No child accounts yet.</Text>}
-              </View>
+                  {children.length === 0 && <Text style={styles.emptyText}>No child accounts yet.</Text>}
+                </View>
+              </>
             )}
 
-            {!showCreateChildForm ? (
-              <Pressable
-                style={[styles.addChildBtn, isMobile && styles.addChildBtnMobile]}
-                onPress={() => setShowCreateChildForm(true)}
-              >
-                <Text style={styles.addChildBtnText}>+ Add Child</Text>
-              </Pressable>
-            ) : null}
-
             {showCreateChildForm ? (
-              <View style={[styles.formCard, isMobile && styles.mobileSurfaceCard]}>
-                <Text style={styles.formCardTitle}>Create Child Account</Text>
-                <AppInput label="Full Name" value={childFullName} onChangeText={setChildFullName} />
-                <AppInput label="Nickname" value={childNickname} onChangeText={setChildNickname} />
-                <AppInput label="Age" value={childAge} onChangeText={setChildAge} keyboardType="numeric" />
-                <AppInput label="Email" value={childEmail} onChangeText={setChildEmail} keyboardType="email-address" />
-                <AppInput label="Password" value={childPassword} onChangeText={setChildPassword} secureTextEntry />
-                <AppButton title="Create Child" loading={submitting} onPress={handleCreateChild} />
-                <AppButton title="Cancel" variant="ghost" onPress={() => setShowCreateChildForm(false)} />
+              <View style={styles.modalOverlay}>
+                <View style={[styles.modalCard, isMobile && styles.mobileSurfaceCard]}>
+                  <View style={styles.modalHead}>
+                    <Text style={styles.formCardTitle}>Create Child Account</Text>
+                    <Pressable style={styles.modalCloseBtn} onPress={() => setShowCreateChildForm(false)}>
+                      <Text style={styles.modalCloseText}>Close</Text>
+                    </Pressable>
+                  </View>
+                  <View style={styles.childPhotoRow}>
+                    <View style={styles.childPhotoPreview}>
+                      {childProfileImageUrl ? (
+                        <Image source={{ uri: childProfileImageUrl }} style={styles.childPhotoImage} resizeMode="cover" />
+                      ) : (
+                        <Text style={styles.childPhotoInitial}>+</Text>
+                      )}
+                    </View>
+                    <View style={styles.childPhotoActions}>
+                      <Text style={styles.childFormLabel}>Child Profile Picture</Text>
+                      <AppButton
+                        title={childProfileImageUrl ? "Change Picture" : "Choose Picture"}
+                        variant="ghost"
+                        onPress={handlePickChildProfileImage}
+                      />
+                    </View>
+                  </View>
+                  <AppInput label="Full Name" value={childFullName} onChangeText={setChildFullName} />
+                  <AppInput label="Nickname" value={childNickname} onChangeText={setChildNickname} />
+                  <AppInput label="Age (5-17)" value={childAge} onChangeText={setChildAge} keyboardType="numeric" />
+                  <AppInput label="Email" value={childEmail} onChangeText={setChildEmail} keyboardType="email-address" />
+                  <AppInput label="Password" value={childPassword} onChangeText={setChildPassword} secureTextEntry />
+                  <Text style={[styles.passwordStrengthText, { color: childPasswordStrength.color }]}>Password strength: {childPasswordStrength.label}</Text>
+                  <AppInput label="Confirm Password" value={childCreateConfirmPassword} onChangeText={setChildCreateConfirmPassword} secureTextEntry />
+                  <AppButton title="Create Child" loading={submitting} onPress={handleCreateChild} />
+                </View>
               </View>
             ) : null}
 
-              {!showFundForm && !showCreateChildForm ? (
-                <Pressable
-                  style={[styles.addChildBtn, styles.fundBtn, isMobile && styles.addChildBtnMobile]}
-                  onPress={() => setShowFundForm(true)}
-                >
-                  <Text style={styles.addChildBtnText}>💳 Fund Child Account</Text>
-                </Pressable>
-              ) : null}
-
-              {showFundForm ? (
-                <View style={[styles.formCard, isMobile && styles.mobileSurfaceCard]}>
-                  <Text style={styles.formCardTitle}>Fund Child Account</Text>
+            {showFundForm ? (
+              <View style={styles.modalOverlay}>
+                <View style={[styles.modalCard, isMobile && styles.mobileSurfaceCard]}>
+                  <View style={styles.modalHead}>
+                    <Text style={styles.formCardTitle}>Fund Child Account</Text>
+                    <Pressable
+                      style={styles.modalCloseBtn}
+                      onPress={() => {
+                        setShowFundForm(false);
+                        setFundChildDropdownOpen(false);
+                      }}
+                    >
+                      <Text style={styles.modalCloseText}>Close</Text>
+                    </Pressable>
+                  </View>
                   <View style={styles.dropdownWrap}>
                     <Text style={styles.childSelectorLabel}>Select Child</Text>
                     <Pressable style={styles.dropdownButton} onPress={() => setFundChildDropdownOpen((p) => !p)}>
                       <Text style={styles.dropdownButtonText}>
                         {children.find((c) => c.id === fundChildId)?.nickname ?? "Choose a child"}
                       </Text>
-                      <Text style={styles.dropdownChevron}>{fundChildDropdownOpen ? "▲" : "▼"}</Text>
+                      <Text style={styles.dropdownChevron}>{fundChildDropdownOpen ? "^" : "v"}</Text>
                     </Pressable>
                     {fundChildDropdownOpen ? (
                       <View style={styles.dropdownMenu}>
@@ -1810,8 +1937,14 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                           <Text style={styles.dropdownEmptyText}>No children found.</Text>
                         ) : (
                           children.map((child) => (
-                            <Pressable key={child.id} style={styles.dropdownItem}
-                              onPress={() => { setFundChildId(child.id); setFundChildDropdownOpen(false); }}>
+                            <Pressable
+                              key={child.id}
+                              style={styles.dropdownItem}
+                              onPress={() => {
+                                setFundChildId(child.id);
+                                setFundChildDropdownOpen(false);
+                              }}
+                            >
                               <Text style={styles.dropdownItemText}>{child.nickname}</Text>
                             </Pressable>
                           ))
@@ -1822,9 +1955,9 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                   <AppInput label="Amount (UGX)" value={fundAmount} onChangeText={setFundAmount} keyboardType="numeric" />
                   <AppInput label="Description (optional)" value={fundDescription} onChangeText={setFundDescription} />
                   <AppButton title="Send Funds" loading={submitting} onPress={handleFundChild} />
-                  <AppButton title="Cancel" variant="ghost" onPress={() => setShowFundForm(false)} />
                 </View>
-              ) : null}
+              </View>
+            ) : null}
           </View>
         )}
 
@@ -3000,13 +3133,6 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                 <View style={styles.childrenLayout}>
                   <View style={styles.childrenMainCol}>
                     <View style={styles.desktopPanel}>
-                      <View style={styles.chipRow}>
-                        {["All", "Unread", "Transactions", "Allowances", "Chores", "System"].map((label, idx) => (
-                          <View key={label} style={[styles.chip, idx === 0 && styles.chipActive]}>
-                            <Text style={[styles.chipText, idx === 0 && styles.chipTextActive]}>{label}</Text>
-                          </View>
-                        ))}
-                      </View>
                       {notifications.length === 0 ? (
                         <Text style={styles.activityEmpty}>No alerts yet.</Text>
                       ) : (
@@ -3299,76 +3425,39 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
         {/* SETTINGS */}
         {!loading && tab === "settings" && (
           <View style={styles.section}>
-            {!isMobile ? (
-              <>
-                <View>
-                  <Text style={styles.pageTitle}>Settings</Text>
-                  <Text style={styles.childrenSubtitle}>Manage account settings and passwords for your family.</Text>
-                </View>
-                <View style={styles.childrenLayout}>
-                  <View style={styles.childrenMainCol}>
-                    <View style={styles.settingsGrid}>
-                      <View style={styles.desktopPanel}>
-                        <Text style={styles.sectionTitle}>Account Settings</Text>
-                        <Text style={styles.listItemMain}>{username}</Text>
-                        <Text style={styles.listItemMeta}>{email}</Text>
-                        <AppInput label="Full Name" value={accountFullName} onChangeText={setAccountFullName} />
-                        <AppInput label="NIN" value={accountNin} onChangeText={setAccountNin} autoCapitalize="characters" />
-                        <AppInput label="Phone Number" value={accountPhone} onChangeText={setAccountPhone} keyboardType="phone-pad" />
-                        <AppInput label="Email" value={accountEmail} onChangeText={setAccountEmail} keyboardType="email-address" />
-                        <AppButton title="Save Account" loading={submitting} onPress={handleUpdateAccount} />
-                      </View>
-                      <View style={styles.desktopPanel}>
-                        <Text style={styles.sectionTitle}>Parent Password</Text>
-                        <AppInput label="Current Password" value={currentPassword} onChangeText={setCurrentPassword} secureTextEntry />
-                        <AppInput label="New Password" value={newPassword} onChangeText={setNewPassword} secureTextEntry />
-                        <AppInput label="Confirm Password" value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry />
-                        <AppButton title="Update Password" loading={submitting} onPress={handleChangePassword} />
-                      </View>
-                      <View style={styles.desktopPanel}>
-                        <Text style={styles.sectionTitle}>Child Password</Text>
-                        <Text style={styles.listItemMeta}>Choose a child and set a new password.</Text>
-                        <ChildSelector children={children} selectedId={passwordChildId} onSelect={setPasswordChildId} />
-                        <AppInput
-                          label="New Child Password"
-                          value={childNewPassword}
-                          onChangeText={setChildNewPassword}
-                          secureTextEntry
-                        />
-                        <AppInput
-                          label="Confirm Child Password"
-                          value={childConfirmPassword}
-                          onChangeText={setChildConfirmPassword}
-                          secureTextEntry
-                        />
-                        <AppButton title="Update Child Password" loading={submitting} onPress={handleChangeChildPassword} />
-                      </View>
-                    </View>
-                  </View>
-                </View>
-              </>
-            ) : (
-              <>
-                <Text style={[styles.pageTitle, isMobile && styles.mobilePageTitle]}>Settings</Text>
-                <View style={[styles.formCard, isMobile && styles.mobileSurfaceCard]}>
-                  <Text style={styles.formCardTitle}>Account Settings</Text>
-                  <AppInput label="Full Name" value={accountFullName} onChangeText={setAccountFullName} />
-                  <AppInput label="NIN" value={accountNin} onChangeText={setAccountNin} autoCapitalize="characters" />
-                  <AppInput label="Phone Number" value={accountPhone} onChangeText={setAccountPhone} keyboardType="phone-pad" />
-                  <AppInput label="Email" value={accountEmail} onChangeText={setAccountEmail} keyboardType="email-address" />
-                  <AppButton title="Save Account" loading={submitting} onPress={handleUpdateAccount} />
-                </View>
+            <Text style={[styles.pageTitle, isMobile && styles.mobilePageTitle]}>Settings</Text>
+            <Text style={styles.childrenSubtitle}>Manage account details, child passwords, and account access.</Text>
 
-                <View style={[styles.formCard, isMobile && styles.mobileSurfaceCard]}>
-                  <Text style={styles.formCardTitle}>Parent Password</Text>
-                  <AppInput label="Current Password" value={currentPassword} onChangeText={setCurrentPassword} secureTextEntry />
-                  <AppInput label="New Password" value={newPassword} onChangeText={setNewPassword} secureTextEntry />
-                  <AppInput label="Confirm Password" value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry />
-                  <AppButton title="Update Password" loading={submitting} onPress={handleChangePassword} />
+            <View style={[styles.settingsSectionCard, isMobile && styles.mobileSurfaceCard]}>
+              <View>
+                <Text style={styles.sectionTitle}>Account Settings</Text>
+                <Text style={styles.listItemMeta}>Saved parent account details</Text>
+              </View>
+              <View style={styles.settingsInfoGrid}>
+                <View style={styles.settingsInfoRow}>
+                  <Text style={styles.settingsInfoLabel}>Full name</Text>
+                  <Text style={styles.settingsInfoValue}>{accountDisplayName}</Text>
                 </View>
+                <View style={styles.settingsInfoRow}>
+                  <Text style={styles.settingsInfoLabel}>Phone number</Text>
+                  <Text style={styles.settingsInfoValue}>{accountDisplayPhone}</Text>
+                </View>
+                <View style={styles.settingsInfoRow}>
+                  <Text style={styles.settingsInfoLabel}>Email</Text>
+                  <Text style={styles.settingsInfoValue}>{accountDisplayEmail}</Text>
+                </View>
+                <View style={styles.settingsInfoRow}>
+                  <Text style={styles.settingsInfoLabel}>NIN</Text>
+                  <Text style={styles.settingsInfoValue}>{accountDisplayNin}</Text>
+                </View>
+              </View>
+            </View>
 
-                <View style={[styles.formCard, isMobile && styles.mobileSurfaceCard]}>
-                  <Text style={styles.formCardTitle}>Child Password</Text>
+            <View style={[styles.settingsSectionCard, isMobile && styles.mobileSurfaceCard]}>
+              <View style={[styles.settingsTwoCol, isMobile && styles.settingsTwoColMobile]}>
+                <View style={styles.settingsPrimaryCol}>
+                  <Text style={styles.sectionTitle}>Child Password</Text>
+                  <Text style={styles.listItemMeta}>Choose a child account and set a new password for them.</Text>
                   <ChildSelector children={children} selectedId={passwordChildId} onSelect={setPasswordChildId} />
                   <AppInput
                     label="New Child Password"
@@ -3384,11 +3473,42 @@ export function ParentDashboardScreen({ email, onLogout }: ParentDashboardScreen
                   />
                   <AppButton title="Update Child Password" loading={submitting} onPress={handleChangeChildPassword} />
                 </View>
-              </>
-            )}
+                <View style={styles.settingsRulesCard}>
+                  <Text style={styles.settingsRulesTitle}>Rules for child passwords</Text>
+                  <Text style={styles.settingsRulesText}>Use at least 8 characters.</Text>
+                  <Text style={styles.settingsRulesText}>Use a password the child has not used elsewhere.</Text>
+                  <Text style={styles.settingsRulesText}>Avoid names, birthdays, or easy patterns.</Text>
+                </View>
+              </View>
+            </View>
+
+            <View style={[styles.settingsSectionCard, isMobile && styles.mobileSurfaceCard]}>
+              <Text style={styles.sectionTitle}>Child Account Access</Text>
+              <Text style={styles.listItemMeta}>Select a child above, then deactivate or delete that child account.</Text>
+              <View style={styles.settingsActionRow}>
+                <Pressable style={[styles.settingsActionBtn, styles.settingsWarningBtn]} onPress={handleDeactivateSelectedChild} disabled={submitting}>
+                  <Text style={styles.settingsWarningText}>Deactivate Child Account</Text>
+                </Pressable>
+                <Pressable style={[styles.settingsActionBtn, styles.settingsDangerBtn]} onPress={handleDeleteSelectedChild} disabled={submitting}>
+                  <Text style={styles.settingsDangerText}>Delete Child Account</Text>
+                </Pressable>
+              </View>
+            </View>
+
+            <View style={[styles.settingsSectionCard, styles.settingsDangerCard, isMobile && styles.mobileSurfaceCard]}>
+              <Text style={styles.sectionTitle}>Parent Account Access</Text>
+              <Text style={styles.listItemMeta}>Deactivate blocks future sign-ins. Delete permanently removes the parent account and linked child accounts.</Text>
+              <View style={styles.settingsActionRow}>
+                <Pressable style={[styles.settingsActionBtn, styles.settingsWarningBtn]} onPress={handleDeactivateParentAccount} disabled={submitting}>
+                  <Text style={styles.settingsWarningText}>Deactivate Parent Account</Text>
+                </Pressable>
+                <Pressable style={[styles.settingsActionBtn, styles.settingsDangerBtn]} onPress={handleDeleteParentAccount} disabled={submitting}>
+                  <Text style={styles.settingsDangerText}>Delete Parent Account</Text>
+                </Pressable>
+              </View>
+            </View>
           </View>
-        )}
-      </ScrollView>
+        )}      </ScrollView>
 
       {isMobile ? (
         <View style={styles.mobileBottomNav}>
@@ -3498,6 +3618,7 @@ const styles = StyleSheet.create({
   sidebarBrand: {
     paddingHorizontal: 16,
     paddingBottom: 20,
+    alignItems: "center",
   },
   sidebarBrandMobile: {
     paddingBottom: 14,
@@ -3510,6 +3631,41 @@ const styles = StyleSheet.create({
     color: "#ffffff",
     fontSize: 18,
     fontWeight: "800",
+    textAlign: "center",
+  },
+  sidebarProfileBlock: {
+    alignItems: "center",
+    paddingHorizontal: 14,
+    paddingBottom: 18,
+    marginTop: -6,
+  },
+  sidebarProfileImageWrap: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: "rgba(255,255,255,0.18)",
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.55)",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  sidebarProfileImage: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+  },
+  sidebarProfileInitial: {
+    color: "#ffffff",
+    fontSize: 26,
+    fontWeight: "800",
+  },
+  sidebarProfileName: {
+    color: "#ffffff",
+    fontSize: 12,
+    fontWeight: "700",
+    marginTop: 8,
+    maxWidth: 180,
   },
   navList: {
     flex: 1,
@@ -3578,47 +3734,6 @@ const styles = StyleSheet.create({
     color: "#ffffff",
     fontSize: 10,
     fontWeight: "800",
-  },
-  sidebarFooter: {
-    paddingHorizontal: 12,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: "rgba(255,255,255,0.1)",
-    gap: 8,
-  },
-  sidebarFooterMobile: {
-    paddingHorizontal: 10,
-    paddingTop: 10,
-  },
-  footerUserRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  footerAvatar: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: "rgba(255,255,255,0.2)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  footerAvatarText: {
-    color: "#ffffff",
-    fontWeight: "700",
-    fontSize: 14,
-  },
-  footerUserInfo: {
-    flex: 1,
-  },
-  footerUsername: {
-    color: "#ffffff",
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  footerEmail: {
-    color: "rgba(255,255,255,0.55)",
-    fontSize: 10,
   },
   logoutBtn: {
     paddingVertical: 4,
@@ -3933,6 +4048,10 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     justifyContent: "flex-end",
   },
+  mobileChildrenActions: {
+    justifyContent: "flex-start",
+    marginBottom: 12,
+  },
   childrenSearchPill: {
     minWidth: 170,
     borderRadius: 10,
@@ -4168,6 +4287,101 @@ const styles = StyleSheet.create({
     gap: 12,
     alignItems: "flex-start",
   },
+  settingsSectionCard: {
+    backgroundColor: "#ffffff",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#e6ebfb",
+    padding: 16,
+    gap: 14,
+  },
+  settingsInfoGrid: {
+    gap: 10,
+  },
+  settingsInfoRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#eef1f8",
+    paddingVertical: 10,
+  },
+  settingsInfoLabel: {
+    color: "#7a80ab",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  settingsInfoValue: {
+    color: "#252b5f",
+    fontSize: 14,
+    fontWeight: "800",
+    flexShrink: 1,
+    textAlign: "right",
+  },
+  settingsTwoCol: {
+    flexDirection: "row",
+    gap: 14,
+    alignItems: "flex-start",
+  },
+  settingsTwoColMobile: {
+    flexDirection: "column",
+  },
+  settingsPrimaryCol: {
+    flex: 1,
+    gap: 10,
+  },
+  settingsRulesCard: {
+    width: "100%",
+    maxWidth: 220,
+    borderRadius: 12,
+    backgroundColor: "#eaf0ff",
+    padding: 14,
+    gap: 8,
+  },
+  settingsRulesTitle: {
+    color: "#252b5f",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  settingsRulesText: {
+    color: "#5d668d",
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  settingsActionRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  settingsActionBtn: {
+    borderRadius: 10,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: "#ffffff",
+  },
+  settingsWarningBtn: {
+    borderColor: "#f3c66d",
+    backgroundColor: "#fff8e8",
+  },
+  settingsDangerBtn: {
+    borderColor: "#fecaca",
+    backgroundColor: "#fff1f2",
+  },
+  settingsWarningText: {
+    color: "#9a6700",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  settingsDangerText: {
+    color: "#b91c1c",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  settingsDangerCard: {
+    borderColor: "#fecaca",
+  },
   allowancesScheduleGrid: {
     flexDirection: "row",
     gap: 10,
@@ -4339,11 +4553,57 @@ const styles = StyleSheet.create({
     backgroundColor: "#c8f0ea",
     justifyContent: "center",
     alignItems: "center",
+    overflow: "hidden",
+  },
+  childAvatarImage: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
   },
   childAvatarText: {
     color: "#0d7a66",
     fontWeight: "800",
     fontSize: 16,
+  },
+  childPhotoRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  childPhotoPreview: {
+    width: 74,
+    height: 74,
+    borderRadius: 37,
+    borderWidth: 1,
+    borderColor: "#dbe3ff",
+    backgroundColor: "#eef4ff",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  childPhotoImage: {
+    width: 74,
+    height: 74,
+    borderRadius: 37,
+  },
+  childPhotoInitial: {
+    color: SIDEBAR_BG,
+    fontSize: 30,
+    fontWeight: "800",
+  },
+  childPhotoActions: {
+    flex: 1,
+    gap: 6,
+  },
+  childFormLabel: {
+    color: "#252b5f",
+    fontWeight: "700",
+    fontSize: 13,
+  },
+  passwordStrengthText: {
+    fontSize: 12,
+    fontWeight: "700",
+    marginTop: -4,
   },
   childCardRight: {
     flex: 1,
@@ -5338,3 +5598,4 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 });
+

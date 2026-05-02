@@ -10,6 +10,10 @@ import { ParentDashboardScreen } from "./parent-dashboard-screen";
 type DashboardShellProps = {
   email: string;
   role: UserRole;
+  fullName?: string | null;
+  phoneNumber?: string | null;
+  nin?: string | null;
+  profileImageUrl?: string | null;
   onLogout: () => void;
 };
 
@@ -23,13 +27,13 @@ const roleLabel: Record<UserRole, string> = {
 
 const tabs: Tab[] = ["home", "wallet", "transactions", "savings", "chores", "allowances", "actions", "settings"];
 
-export function DashboardShell({ email, role, onLogout }: DashboardShellProps) {
+export function DashboardShell({ email, role, fullName, phoneNumber, nin, profileImageUrl, onLogout }: DashboardShellProps) {
   if (role === "child") {
     return <ChildDashboardScreen email={email} onLogout={onLogout} />;
   }
 
   if (role === "parent") {
-    return <ParentDashboardScreen email={email} onLogout={onLogout} />;
+    return <ParentDashboardScreen email={email} fullName={fullName ?? null} phoneNumber={phoneNumber ?? null} nin={nin ?? null} profileImageUrl={profileImageUrl ?? null} onLogout={onLogout} />;
   }
 
   if (role === "admin") {
@@ -154,3 +158,4 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 });
+

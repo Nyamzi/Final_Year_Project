@@ -12,6 +12,10 @@ type AppView = "login" | "register" | "dashboard";
 type Session = {
   email: string;
   role: UserRole;
+  fullName: string | null;
+  phoneNumber: string | null;
+  nin: string | null;
+  profileImageUrl: string | null;
 };
 
 export default function App() {
@@ -37,7 +41,7 @@ export default function App() {
           setView("login");
           return;
         }
-        setSession({ email: data.user.email, role: data.user.role });
+        setSession({ email: data.user.email, role: data.user.role, fullName: data.user.fullName, phoneNumber: data.user.phoneNumber, nin: data.user.nin, profileImageUrl: data.user.profileImageUrl });
         setView("dashboard");
       } catch {
         if (!mounted) return;
@@ -69,7 +73,7 @@ export default function App() {
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="dark" />
       {!loadingSession && view === "dashboard" && session ? (
-        <DashboardShell email={session.email} role={session.role} onLogout={handleLogout} />
+        <DashboardShell email={session.email} role={session.role} fullName={session.fullName} phoneNumber={session.phoneNumber} nin={session.nin} profileImageUrl={session.profileImageUrl} onLogout={handleLogout} />
       ) : (
         <ScrollView contentContainerStyle={styles.container}>
           {loadingSession ? <Text style={styles.loadingText}>Loading session...</Text> : null}
@@ -115,3 +119,4 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
 });
+

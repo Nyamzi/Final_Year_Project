@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { Role } from "@prisma/client";
+import { Role, Sex } from "@prisma/client";
 import { AUTH_COOKIE } from "../lib/auth";
 import { authMiddleware, AuthenticatedRequest } from "../middleware/auth";
 import { prisma } from "../db";
@@ -18,6 +18,8 @@ const registerSchema = z.object({
   nin: z.string().regex(/^[A-Za-z0-9]{8,20}$/),
   phoneNumber: z.string().regex(/^\+?[0-9]{10,15}$/),
   email: z.string().email(),
+  sex: z.enum(["male", "female"]),
+  profileImageUrl: z.string().min(20),
   password: z.string().min(8),
   confirmPassword: z.string().min(8),
 });
@@ -103,6 +105,8 @@ router.post("/register", async (req, res) => {
         data: {
           fullName: parsed.data.fullName,
           role: Role.parent,
+          sex: parsed.data.sex,
+          profileImageUrl: parsed.data.profileImageUrl,
         },
       },
     });
@@ -119,6 +123,8 @@ router.post("/register", async (req, res) => {
           nin: parsed.data.nin.toUpperCase(),
           phoneNumber: parsed.data.phoneNumber,
           email: parsed.data.email,
+          sex: parsed.data.sex as Sex,
+          profileImageUrl: parsed.data.profileImageUrl,
           role: Role.parent,
         },
       });
@@ -151,7 +157,7 @@ router.post("/oauth-profile", async (req, res) => {
 
     const existingById = await prisma.user.findUnique({ where: { id: authUser.id } });
     if (existingById) {
-      return res.json({ user: { userId: existingById.id, email: existingById.email, role: existingById.role } });
+      return res.json({ user: { userId: existingById.id, email: existingById.email, role: existingById.role, fullName: existingById.fullName, phoneNumber: existingById.phoneNumber, nin: existingById.nin, sex: existingById.sex, profileImageUrl: existingById.profileImageUrl } });
     }
 
     const existingByEmail = await prisma.user.findUnique({ where: { email: authUser.email } });
@@ -170,19 +176,40 @@ router.post("/oauth-profile", async (req, res) => {
         id: authUser.id,
         fullName,
         email: authUser.email,
+        profileImageUrl: (authUser.user_metadata?.avatar_url as string | undefined) ?? null,
         role: Role.parent,
       },
     });
 
-    res.status(201).json({ user: { userId: user.id, email: user.email, role: user.role } });
+    res.status(201).json({ user: { userId: user.id, email: user.email, role: user.role, fullName: user.fullName, phoneNumber: user.phoneNumber, nin: user.nin, sex: user.sex, profileImageUrl: user.profileImageUrl } });
   } catch (error) {
     console.error("OAuth profile error:", error);
     res.status(500).json({ error: "Failed to prepare Google sign-in profile" });
   }
 });
 // GET /api/auth/me
-router.get("/me", authMiddleware, (req: AuthenticatedRequest, res) => {
-  res.json({ user: req.user });
+router.get("/me", authMiddleware, async (req: AuthenticatedRequest, res) => {
+  const user = await prisma.user.findUnique({
+    where: { id: req.user!.userId },
+    select: { id: true, email: true, role: true, fullName: true, phoneNumber: true, nin: true, sex: true, profileImageUrl: true },
+  });
+
+  if (!user) {
+    return res.status(404).json({ error: "User profile not found" });
+  }
+
+  res.json({
+    user: {
+      userId: user.id,
+      email: user.email,
+      role: user.role,
+      fullName: user.fullName,
+      phoneNumber: user.phoneNumber,
+      nin: user.nin,
+      sex: user.sex,
+      profileImageUrl: user.profileImageUrl,
+    },
+  });
 });
 
 // POST /api/auth/logout
@@ -240,5 +267,4 @@ router.post("/change-password", authMiddleware, async (req: AuthenticatedRequest
 });
 
 export default router;
-
 
