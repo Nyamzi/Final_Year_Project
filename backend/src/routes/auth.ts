@@ -198,6 +198,15 @@ router.get("/me", authMiddleware, async (req: AuthenticatedRequest, res) => {
     return res.status(404).json({ error: "User profile not found" });
   }
 
+  let nickname: string | null = null;
+  if (user.role === Role.child) {
+    const childProfile = await prisma.childProfile.findUnique({
+      where: { childUserId: user.id },
+      select: { nickname: true },
+    });
+    nickname = childProfile?.nickname ?? null;
+  }
+
   res.json({
     user: {
       userId: user.id,
@@ -208,6 +217,7 @@ router.get("/me", authMiddleware, async (req: AuthenticatedRequest, res) => {
       nin: user.nin,
       sex: user.sex,
       profileImageUrl: user.profileImageUrl,
+      nickname,
     },
   });
 });

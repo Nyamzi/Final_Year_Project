@@ -43,6 +43,8 @@ export type AuthMeResponse = {
     nin: string | null;
     sex: "male" | "female" | null;
     profileImageUrl: string | null;
+    /** Set for child accounts — display name chosen by parent */
+    nickname?: string | null;
   };
 };
 
@@ -122,8 +124,10 @@ export type ParentPendingTransaction = {
 
 export type ParentTransactionSummary = {
   id: string;
-  childId: string;
+  childId: string | null;
   childName: string;
+  /** Parent wallet deposits vs child-wallet activity */
+  accountScope?: "parent" | "child";
   amount: number;
   type: "earn" | "spend";
   status: "pending" | "approved" | "rejected";
@@ -379,6 +383,7 @@ export type ParentReportExportType =
   | "parent-summary"
   | "children-overview"
   | "transactions"
+  | "pending"
   | "goals"
   | "chores"
   | "allowances"
@@ -939,7 +944,10 @@ export function apiCreateAdminQuiz(input: { title: string; isPublished?: boolean
 }
 
 export function apiParentAllTransactions(childId?: string) {
-  const query = childId ? `?childId=${encodeURIComponent(childId)}` : "";
+  const query =
+    childId !== undefined && childId !== ""
+      ? `?childId=${encodeURIComponent(childId)}`
+      : "";
   return request<{ transactions: ParentTransactionSummary[] }>(`/api/parent/transactions${query}`, {
     method: "GET",
   });
@@ -1064,10 +1072,17 @@ export function apiParentReportExport(
 
 export function apiParentReportPdf(
   type: ParentReportExportType,
-  range: "this_month" | "last_30_days" | "all_time" = "this_month"
+  range: "this_month" | "last_30_days" | "all_time" = "this_month",
+  options?: { include?: string }
 ) {
+  const params = new URLSearchParams();
+  params.set("type", type);
+  params.set("range", range);
+  if (options?.include?.trim()) {
+    params.set("include", options.include.trim());
+  }
   return request<{ filename: string; mimeType: string; pdfBase64: string; type: ParentReportExportType; range: string; count: number }>(
-    `/api/parent/reports/pdf?type=${encodeURIComponent(type)}&range=${encodeURIComponent(range)}`,
+    `/api/parent/reports/pdf?${params.toString()}`,
     {
       method: "GET",
     }
@@ -1081,7 +1096,7 @@ export function apiParentTransactionStatementPdf(input: {
   include: StatementIncludeField[];
 }) {
   const params = new URLSearchParams();
-  params.set("childId", input.childId || "all");
+  params.set("childId", input.childId === undefined || input.childId === "" ? "all" : input.childId);
   params.set("txType", input.txType || "all");
   params.set("txStatus", input.txStatus || "all");
   params.set("include", input.include.join(","));

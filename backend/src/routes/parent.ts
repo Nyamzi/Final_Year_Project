@@ -1,3 +1,6 @@
+import fs from "fs";
+import path from "path";
+import { randomUUID } from "crypto";
 import { Router } from "express";
 import { prisma } from "../db";
 import { authMiddleware, AuthenticatedRequest, requireRole } from "../middleware/auth";
@@ -88,11 +91,53 @@ function parseOptionalDate(value?: string): Date | null | undefined {
   return parsed;
 }
 
+/** Supabase Auth rejects bodies > 1MB; base64 avatars must be stored locally first. */
+function resolvePublicApiBaseUrl(req: AuthenticatedRequest): string {
+  const envBase = process.env.PUBLIC_API_BASE_URL?.trim().replace(/\/$/, "");
+  if (envBase) return envBase;
+  const host = req.get("x-forwarded-host") ?? req.get("host") ?? "localhost:3000";
+  const proto = req.get("x-forwarded-proto") ?? req.protocol ?? "http";
+  return `${proto}://${host}`;
+}
+
+function persistDataUriProfileImage(req: AuthenticatedRequest, dataUri: string): string {
+  const base64Marker = ";base64,";
+  const markerIndex = dataUri.indexOf(base64Marker);
+  if (markerIndex === -1 || !dataUri.startsWith("data:")) {
+    throw new Error("invalid_image");
+  }
+
+  const mimePart = dataUri.slice(5, markerIndex);
+  const base64Data = dataUri.slice(markerIndex + base64Marker.length);
+  const buffer = Buffer.from(base64Data, "base64");
+  if (buffer.length > 8 * 1024 * 1024) {
+    throw new Error("image_too_large");
+  }
+
+  const ext = mimePart.includes("png")
+    ? "png"
+    : mimePart.includes("webp")
+      ? "webp"
+      : mimePart.includes("gif")
+        ? "gif"
+        : "jpeg";
+
+  const uploadDir = path.join(process.cwd(), "uploads", "profiles");
+  fs.mkdirSync(uploadDir, { recursive: true });
+  const fileName = `${randomUUID()}.${ext}`;
+  const targetPath = path.join(uploadDir, fileName);
+  fs.writeFileSync(targetPath, buffer);
+
+  const relative = `/uploads/profiles/${fileName}`;
+  return `${resolvePublicApiBaseUrl(req)}${relative}`;
+}
+
 type ParentReportRange = "this_month" | "last_30_days" | "all_time";
 type ParentReportExportType =
   | "parent-summary"
   | "children-overview"
   | "transactions"
+  | "pending"
   | "goals"
   | "chores"
   | "allowances"
@@ -120,6 +165,57 @@ function toCsv(rows: Array<Record<string, string | number | boolean | null | und
   const headerRow = headers.map((header) => escapeCsvValue(header)).join(",");
   const dataRows = rows.map((row) => headers.map((header) => escapeCsvValue(row[header])).join(","));
   return [headerRow, ...dataRows].join("\n");
+}
+
+type UnifiedParentTxRow = {
+  id: string;
+  childId: string | null;
+  childName: string;
+  accountScope: "parent" | "child";
+  amount: number;
+  type: TransactionType;
+  status: TransactionStatus;
+  description: string | null;
+  createdAt: Date;
+};
+
+/** Parent wallet deposits plus all child-wallet transactions (sorted newest first). */
+async function fetchUnifiedParentTransactions(parentUserId: string): Promise<UnifiedParentTxRow[]> {
+  const [transactions, deposits] = await Promise.all([
+    prisma.transaction.findMany({
+      where: { child: { parentId: parentUserId } },
+      include: { child: true },
+    }),
+    prisma.parentDeposit.findMany({
+      where: { parentId: parentUserId },
+    }),
+  ]);
+
+  const childRows: UnifiedParentTxRow[] = transactions.map((item) => ({
+    id: item.id,
+    childId: item.childId,
+    childName: item.child.nickname,
+    accountScope: "child",
+    amount: Number(item.amount),
+    type: item.type,
+    status: item.status,
+    description: item.description,
+    createdAt: item.createdAt,
+  }));
+
+  const parentRows: UnifiedParentTxRow[] = deposits.map((d) => ({
+    id: `parent-deposit-${d.id}`,
+    childId: null,
+    childName: "Parent wallet",
+    accountScope: "parent",
+    amount: Number(d.amount),
+    type: TransactionType.earn,
+    status: TransactionStatus.approved,
+    description: "Wallet deposit",
+    createdAt: d.createdAt,
+  }));
+
+  return [...childRows, ...parentRows].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 }
 
 async function processDueAllowancesForParent(parentId: string) {
@@ -229,6 +325,19 @@ router.post("/children", authMiddleware, requireRole("parent"), async (req: Auth
       return res.status(400).json({ error: "Invalid child payload" });
     }
 
+    let profileImageUrl = parsed.data.profileImageUrl;
+    if (profileImageUrl.startsWith("data:")) {
+      try {
+        profileImageUrl = persistDataUriProfileImage(req, profileImageUrl);
+      } catch (err) {
+        const code = err instanceof Error ? err.message : "";
+        if (code === "image_too_large") {
+          return res.status(400).json({ error: "Profile image is too large. Choose a smaller photo." });
+        }
+        return res.status(400).json({ error: "Invalid profile image" });
+      }
+    }
+
     const existing = await prisma.user.findUnique({ where: { email: parsed.data.email } });
     if (existing) {
       return res.status(409).json({ error: "Email already exists" });
@@ -243,7 +352,7 @@ router.post("/children", authMiddleware, requireRole("parent"), async (req: Auth
         fullName: parsed.data.fullName,
         role: Role.child,
         parentId: req.user!.userId,
-        profileImageUrl: parsed.data.profileImageUrl,
+        profileImageUrl,
       },
     });
     if (authError || !authData.user) {
@@ -258,7 +367,7 @@ router.post("/children", authMiddleware, requireRole("parent"), async (req: Auth
             id: authData.user.id,
             fullName: parsed.data.fullName,
             email: parsed.data.email,
-            profileImageUrl: parsed.data.profileImageUrl,
+            profileImageUrl,
             role: Role.child,
           },
         });
@@ -840,26 +949,64 @@ router.get("/transactions", authMiddleware, requireRole("parent"), async (req: A
 
     const childId = typeof req.query.childId === "string" ? req.query.childId : undefined;
 
-    const transactions = await prisma.transaction.findMany({
-      where: {
-        child: { parentId: req.user!.userId },
-        ...(childId ? { childId } : {}),
-      },
-      include: { child: true },
-      orderBy: { createdAt: "desc" },
-      take: 100,
-    });
+    if (childId === "parent_wallet") {
+      const deposits = await prisma.parentDeposit.findMany({
+        where: { parentId: req.user!.userId },
+        orderBy: { createdAt: "desc" },
+      });
+      return res.json({
+        transactions: deposits.map((d) => ({
+          id: `parent-deposit-${d.id}`,
+          childId: null,
+          childName: "Parent wallet",
+          accountScope: "parent" as const,
+          amount: Number(d.amount),
+          type: "earn",
+          status: "approved",
+          description: "Wallet deposit",
+          createdAt: d.createdAt.toISOString(),
+        })),
+      });
+    }
+
+    if (childId) {
+      const transactions = await prisma.transaction.findMany({
+        where: {
+          child: { parentId: req.user!.userId },
+          childId,
+        },
+        include: { child: true },
+        orderBy: { createdAt: "desc" },
+      });
+
+      return res.json({
+        transactions: transactions.map((item) => ({
+          id: item.id,
+          childId: item.childId,
+          childName: item.child.nickname,
+          accountScope: "child" as const,
+          amount: Number(item.amount),
+          type: item.type,
+          status: item.status,
+          description: item.description,
+          createdAt: item.createdAt.toISOString(),
+        })),
+      });
+    }
+
+    const unified = await fetchUnifiedParentTransactions(req.user!.userId);
 
     res.json({
-      transactions: transactions.map((item) => ({
-        id: item.id,
-        childId: item.childId,
-        childName: item.child.nickname,
-        amount: Number(item.amount),
-        type: item.type,
-        status: item.status,
-        description: item.description,
-        createdAt: item.createdAt,
+      transactions: unified.map((row) => ({
+        id: row.id,
+        childId: row.childId,
+        childName: row.childName,
+        accountScope: row.accountScope,
+        amount: row.amount,
+        type: row.type,
+        status: row.status,
+        description: row.description,
+        createdAt: row.createdAt.toISOString(),
       })),
     });
   } catch (error) {
@@ -1755,6 +1902,7 @@ router.get("/reports/export", authMiddleware, requireRole("parent"), async (req:
       "parent-summary",
       "children-overview",
       "transactions",
+      "pending",
       "goals",
       "chores",
       "allowances",
@@ -1770,235 +1918,11 @@ router.get("/reports/export", authMiddleware, requireRole("parent"), async (req:
       return res.status(400).json({ error: "Invalid report range" });
     }
 
-    await processDueAllowancesForParent(req.user!.userId);
-    const fromDate = getFromDateForRange(range);
-    const suffix = range === "this_month" ? "this-month" : range === "last_30_days" ? "last-30-days" : "all-time";
-
-    const [parent, children, transactions, goals, chores, allowances, learningAssignments, supportTickets] = await Promise.all([
-      prisma.user.findUnique({
-        where: { id: req.user!.userId },
-        select: {
-          accountBalance: true,
-          totalDeposited: true,
-          parentDeposits: {
-            where: fromDate ? { createdAt: { gte: fromDate } } : undefined,
-            select: { amount: true },
-          },
-        },
-      }),
-      prisma.childProfile.findMany({
-        where: { parentId: req.user!.userId },
-        include: { wallet: true },
-        orderBy: { createdAt: "desc" },
-      }),
-      prisma.transaction.findMany({
-        where: {
-          child: { parentId: req.user!.userId },
-          ...(fromDate ? { createdAt: { gte: fromDate } } : {}),
-        },
-        include: { child: true },
-        orderBy: { createdAt: "desc" },
-      }),
-      prisma.savingsGoal.findMany({
-        where: {
-          child: { parentId: req.user!.userId },
-          ...(fromDate ? { updatedAt: { gte: fromDate } } : {}),
-        },
-        include: { child: true },
-        orderBy: { createdAt: "desc" },
-      }),
-      prisma.choreAssignment.findMany({
-        where: {
-          parentId: req.user!.userId,
-          ...(fromDate ? { createdAt: { gte: fromDate } } : {}),
-        },
-        include: { child: true },
-        orderBy: { createdAt: "desc" },
-      }),
-      prisma.allowanceSchedule.findMany({
-        where: {
-          parentId: req.user!.userId,
-          ...(fromDate ? { createdAt: { gte: fromDate } } : {}),
-        },
-        include: { child: true },
-        orderBy: { createdAt: "desc" },
-      }),
-      prisma.childLessonAssignment.findMany({
-        where: {
-          parentId: req.user!.userId,
-          ...(fromDate ? { assignedAt: { gte: fromDate } } : {}),
-        },
-        include: { child: true, lesson: true },
-        orderBy: { assignedAt: "desc" },
-      }),
-      prisma.supportTicket.findMany({
-        where: {
-          parentId: req.user!.userId,
-          ...(fromDate ? { createdAt: { gte: fromDate } } : {}),
-        },
-        orderBy: { createdAt: "desc" },
-      }),
-    ]);
-
-    if (!parent) {
+    const computed = await computeParentReportRows(req.user!.userId, range, type);
+    if (!computed) {
       return res.status(404).json({ error: "Parent account not found" });
     }
-
-    const goalsByChild = new Map<string, { currentAmount: number; completed: number }>();
-    for (const goal of goals) {
-      const existing = goalsByChild.get(goal.childId) ?? { currentAmount: 0, completed: 0 };
-      goalsByChild.set(goal.childId, {
-        currentAmount: existing.currentAmount + Number(goal.currentAmount),
-        completed: existing.completed + (goal.status === GoalStatus.completed ? 1 : 0),
-      });
-    }
-    const completedChoresByChild = new Map<string, number>();
-    for (const chore of chores) {
-      if (chore.status !== "completed") continue;
-      completedChoresByChild.set(chore.childId, (completedChoresByChild.get(chore.childId) ?? 0) + 1);
-    }
-
-    const totalDepositsInRange = parent.parentDeposits.reduce((sum, row) => sum + Number(row.amount), 0);
-    const approvedTransactions = transactions.filter((tx) => tx.status === TransactionStatus.approved);
-    const totalSentToChildren = approvedTransactions
-      .filter((tx) => tx.type === TransactionType.earn)
-      .reduce((sum, tx) => sum + Number(tx.amount), 0);
-    const pendingApprovals = transactions.filter((tx) => tx.status === TransactionStatus.pending).length;
-    const reservedForActiveAllowances = allowances.filter((item) => item.isActive).reduce((sum, item) => sum + Number(item.amount), 0);
-
-    let rows: Array<Record<string, string | number | boolean | null | undefined>> = [];
-    let filename = `report-${type}-${suffix}.csv`;
-
-    if (type === "parent-summary") {
-      rows = [{
-        range: suffix,
-        parentBalance: Number(parent.accountBalance),
-        totalDepositedLifetime: Number(parent.totalDeposited),
-        depositsInRange: totalDepositsInRange,
-        pendingApprovals,
-        reservedForActiveAllowances,
-        totalSentToChildren,
-      }];
-    } else if (type === "children-overview") {
-      rows = children.map((child) => {
-        const goalStats = goalsByChild.get(child.id) ?? { currentAmount: 0, completed: 0 };
-        const walletBalance = Number(child.wallet?.balance ?? 0);
-        const totalSaved = walletBalance + goalStats.currentAmount;
-        const completedGoals = goalStats.completed;
-        const completedChores = completedChoresByChild.get(child.id) ?? 0;
-        return {
-          childId: child.id,
-          childName: child.nickname,
-          age: child.age,
-          walletBalance,
-          walletTotalEarned: Number(child.wallet?.totalEarned ?? 0),
-          walletTotalSpent: Number(child.wallet?.totalSpent ?? 0),
-          savedInGoals: goalStats.currentAmount,
-          totalSaved,
-          goalsCompleted: completedGoals,
-          badgesEarned: completedGoals + completedChores,
-        };
-      });
-    } else if (type === "transactions") {
-      rows = transactions.map((tx) => ({
-        transactionId: tx.id,
-        childId: tx.childId,
-        childName: tx.child.nickname,
-        type: tx.type,
-        status: tx.status,
-        amount: Number(tx.amount),
-        description: tx.description ?? "",
-        createdAt: tx.createdAt.toISOString(),
-      }));
-    } else if (type === "goals") {
-      rows = goals.map((goal) => ({
-        goalId: goal.id,
-        childId: goal.childId,
-        childName: goal.child.nickname,
-        title: goal.title,
-        targetAmount: Number(goal.targetAmount),
-        currentAmount: Number(goal.currentAmount),
-        status: goal.status,
-        targetDate: goal.targetDate?.toISOString() ?? "",
-        completedAt: goal.completedAt?.toISOString() ?? "",
-      }));
-    } else if (type === "chores") {
-      rows = chores.map((chore) => ({
-        choreId: chore.id,
-        childId: chore.childId,
-        childName: chore.child.nickname,
-        title: chore.title,
-        status: chore.status,
-        rewardAmount: Number(chore.rewardAmount),
-        dueDate: chore.dueDate?.toISOString() ?? "",
-        completedAt: chore.completedAt?.toISOString() ?? "",
-      }));
-    } else if (type === "allowances") {
-      rows = allowances.map((item) => ({
-        allowanceId: item.id,
-        childId: item.childId,
-        childName: item.child.nickname,
-        title: item.title,
-        amount: Number(item.amount),
-        availableOn: item.availableOn.toISOString(),
-        isActive: item.isActive,
-        notes: item.notes ?? "",
-      }));
-    } else if (type === "learning") {
-      rows = learningAssignments.map((item) => ({
-        assignmentId: item.id,
-        childId: item.childId,
-        childName: item.child.nickname,
-        lessonId: item.lessonId,
-        lessonTitle: item.lesson.title,
-        status: item.status,
-        progressPercent: item.progressPercent,
-        assignedAt: item.assignedAt.toISOString(),
-        firstViewedAt: item.firstViewedAt?.toISOString() ?? "",
-        lastViewedAt: item.lastViewedAt?.toISOString() ?? "",
-        completedAt: item.completedAt?.toISOString() ?? "",
-      }));
-    } else if (type === "support") {
-      rows = supportTickets.map((item) => ({
-        ticketId: item.id,
-        issueType: item.issueType,
-        status: item.status,
-        createdAt: item.createdAt.toISOString(),
-        message: item.message,
-      }));
-    } else {
-      filename = `full-report-export-${suffix}.csv`;
-      rows = [
-        {
-          section: "summary",
-          key: "parent_balance",
-          value: Number(parent.accountBalance),
-        },
-        {
-          section: "summary",
-          key: "total_sent_to_children",
-          value: totalSentToChildren,
-        },
-        ...children.map((child) => {
-          const goalStats = goalsByChild.get(child.id) ?? { currentAmount: 0, completed: 0 };
-          const walletBalance = Number(child.wallet?.balance ?? 0);
-          const totalSaved = walletBalance + goalStats.currentAmount;
-          const completedGoals = goalStats.completed;
-          const completedChores = completedChoresByChild.get(child.id) ?? 0;
-          return {
-            section: "child_overview",
-            key: child.nickname,
-            value: `saved=${totalSaved}; goals=${completedGoals}; badges=${completedGoals + completedChores}`,
-          };
-        }),
-        ...transactions.slice(0, 300).map((tx) => ({
-          section: "transaction",
-          key: tx.id,
-          value: `${tx.child.nickname}; ${tx.type}; ${tx.status}; ${Number(tx.amount)}`,
-        })),
-      ];
-    }
-
+    const { rows, filename } = computed;
     const csv = toCsv(rows);
     return res.json({
       filename,
@@ -2015,6 +1939,8 @@ router.get("/reports/export", authMiddleware, requireRole("parent"), async (req:
 
 router.get("/transactions/statement-pdf", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
   try {
+    await processDueAllowancesForParent(req.user!.userId);
+
     const childId = typeof req.query.childId === "string" ? req.query.childId : "all";
     const txType = typeof req.query.txType === "string" ? req.query.txType : "all";
     const txStatus = typeof req.query.txStatus === "string" ? req.query.txStatus : "all";
@@ -2023,26 +1949,29 @@ router.get("/transactions/statement-pdf", authMiddleware, requireRole("parent"),
     const allowedInclude: StatementIncludeField[] = ["date", "child", "type", "status", "description", "amount"];
     const includeFields = allowedInclude.filter((field) => includeSet.has(field));
 
-    const whereClause: Prisma.TransactionWhereInput = {
-      child: { parentId: req.user!.userId },
-      ...(childId !== "all" ? { childId } : {}),
-      ...(txType === "earn" || txType === "spend" ? { type: txType as TransactionType } : {}),
-      ...(txStatus === "pending" || txStatus === "approved" || txStatus === "rejected"
-        ? { status: txStatus as TransactionStatus }
-        : {}),
-    };
+    let rows = await fetchUnifiedParentTransactions(req.user!.userId);
 
-    const [transactions, parent, selectedChild] = await Promise.all([
-      prisma.transaction.findMany({
-        where: whereClause,
-        include: { child: true },
-        orderBy: { createdAt: "desc" },
-      }),
+    if (childId !== "all") {
+      if (childId === "parent_wallet") {
+        rows = rows.filter((r) => r.accountScope === "parent");
+      } else {
+        rows = rows.filter((r) => r.childId === childId);
+      }
+    }
+
+    if (txType === "earn" || txType === "spend") {
+      rows = rows.filter((r) => r.type === txType);
+    }
+    if (txStatus === "pending" || txStatus === "approved" || txStatus === "rejected") {
+      rows = rows.filter((r) => r.status === txStatus);
+    }
+
+    const [parent, selectedChild] = await Promise.all([
       prisma.user.findUnique({
         where: { id: req.user!.userId },
         select: { fullName: true, email: true },
       }),
-      childId !== "all"
+      childId !== "all" && childId !== "parent_wallet"
         ? prisma.childProfile.findFirst({
             where: { id: childId, parentId: req.user!.userId },
             select: { nickname: true },
@@ -2059,7 +1988,12 @@ router.get("/transactions/statement-pdf", authMiddleware, requireRole("parent"),
     doc.on("data", (chunk) => chunks.push(chunk));
 
     const generatedAt = new Date();
-    const childLabel = childId === "all" ? "All children" : selectedChild?.nickname ?? "Selected child";
+    const childLabel =
+      childId === "all"
+        ? "Parent wallet & all children"
+        : childId === "parent_wallet"
+          ? "Parent wallet only"
+          : selectedChild?.nickname ?? "Selected child";
     const typeLabel = txType === "all" ? "All types" : txType;
     const statusLabel = txStatus === "all" ? "All statuses" : txStatus;
 
@@ -2067,24 +2001,24 @@ router.get("/transactions/statement-pdf", authMiddleware, requireRole("parent"),
     doc.moveDown(0.3);
     doc.fontSize(10).text(`Generated: ${generatedAt.toLocaleString()}`);
     doc.text(`Parent: ${parent.fullName ?? parent.email}`);
-    doc.text(`Filters: Child=${childLabel}, Type=${typeLabel}, Status=${statusLabel}`);
-    doc.text(`Records: ${transactions.length}`);
+    doc.text(`Filters: Account=${childLabel}, Type=${typeLabel}, Status=${statusLabel}`);
+    doc.text(`Records: ${rows.length}`);
     doc.moveDown(0.7);
 
-    if (transactions.length === 0) {
+    if (rows.length === 0) {
       doc.fontSize(12).text("No transactions found for the selected filters.");
     } else {
-      transactions.forEach((item, index) => {
+      rows.forEach((item, index) => {
         if (doc.y > 730) {
           doc.addPage();
         }
-        doc.fontSize(11).text(`${index + 1}.`, { continued: true }).text(` ${item.child.nickname}`, { continued: true }).text(` - ${Number(item.amount).toLocaleString()} UGX`);
+        doc.fontSize(11).text(`${index + 1}.`, { continued: true }).text(` ${item.childName}`, { continued: true }).text(` - ${Number(item.amount).toLocaleString()} UGX`);
 
         if (includeFields.includes("date")) {
           doc.fontSize(9).text(`Date: ${item.createdAt.toLocaleString()}`);
         }
         if (includeFields.includes("child")) {
-          doc.fontSize(9).text(`Child: ${item.child.nickname}`);
+          doc.fontSize(9).text(`Account: ${item.childName}`);
         }
         if (includeFields.includes("type")) {
           doc.fontSize(9).text(`Type: ${item.type}`);
@@ -2116,11 +2050,421 @@ router.get("/transactions/statement-pdf", authMiddleware, requireRole("parent"),
       filename,
       mimeType: "application/pdf",
       pdfBase64: pdfBuffer.toString("base64"),
-      count: transactions.length,
+      count: rows.length,
     });
   } catch (error) {
     console.error("Generate transaction statement PDF error:", error);
     res.status(500).json({ error: "Failed to generate transaction statement PDF" });
+  }
+});
+
+async function computeParentReportRows(
+  parentUserId: string,
+  range: ParentReportRange,
+  type: ParentReportExportType,
+): Promise<{ rows: Array<Record<string, string | number | boolean | null | undefined>>; filename: string } | null> {
+  await processDueAllowancesForParent(parentUserId);
+  const fromDate = getFromDateForRange(range);
+  const suffix = range === "this_month" ? "this-month" : range === "last_30_days" ? "last-30-days" : "all-time";
+
+  const [parent, children, transactions, goals, chores, allowances, learningAssignments, supportTickets] = await Promise.all([
+    prisma.user.findUnique({
+      where: { id: parentUserId },
+      select: {
+        accountBalance: true,
+        totalDeposited: true,
+        parentDeposits: {
+          where: fromDate ? { createdAt: { gte: fromDate } } : undefined,
+          select: { amount: true },
+        },
+      },
+    }),
+    prisma.childProfile.findMany({
+      where: { parentId: parentUserId },
+      include: { wallet: true },
+      orderBy: { createdAt: "desc" },
+    }),
+    prisma.transaction.findMany({
+      where: {
+        child: { parentId: parentUserId },
+        ...(fromDate ? { createdAt: { gte: fromDate } } : {}),
+      },
+      include: { child: true },
+      orderBy: { createdAt: "desc" },
+    }),
+    prisma.savingsGoal.findMany({
+      where: {
+        child: { parentId: parentUserId },
+        ...(fromDate ? { updatedAt: { gte: fromDate } } : {}),
+      },
+      include: { child: true },
+      orderBy: { createdAt: "desc" },
+    }),
+    prisma.choreAssignment.findMany({
+      where: {
+        parentId: parentUserId,
+        ...(fromDate ? { createdAt: { gte: fromDate } } : {}),
+      },
+      include: { child: true },
+      orderBy: { createdAt: "desc" },
+    }),
+    prisma.allowanceSchedule.findMany({
+      where: {
+        parentId: parentUserId,
+        ...(fromDate ? { createdAt: { gte: fromDate } } : {}),
+      },
+      include: { child: true },
+      orderBy: { createdAt: "desc" },
+    }),
+    prisma.childLessonAssignment.findMany({
+      where: {
+        parentId: parentUserId,
+        ...(fromDate ? { assignedAt: { gte: fromDate } } : {}),
+      },
+      include: { child: true, lesson: true },
+      orderBy: { assignedAt: "desc" },
+    }),
+    prisma.supportTicket.findMany({
+      where: {
+        parentId: parentUserId,
+        ...(fromDate ? { createdAt: { gte: fromDate } } : {}),
+      },
+      orderBy: { createdAt: "desc" },
+    }),
+  ]);
+
+  if (!parent) {
+    return null;
+  }
+
+  const goalsByChild = new Map<string, { currentAmount: number; completed: number }>();
+  for (const goal of goals) {
+    const existing = goalsByChild.get(goal.childId) ?? { currentAmount: 0, completed: 0 };
+    goalsByChild.set(goal.childId, {
+      currentAmount: existing.currentAmount + Number(goal.currentAmount),
+      completed: existing.completed + (goal.status === GoalStatus.completed ? 1 : 0),
+    });
+  }
+  const completedChoresByChild = new Map<string, number>();
+  for (const chore of chores) {
+    if (chore.status !== "completed") continue;
+    completedChoresByChild.set(chore.childId, (completedChoresByChild.get(chore.childId) ?? 0) + 1);
+  }
+
+  const totalDepositsInRange = parent.parentDeposits.reduce((sum, row) => sum + Number(row.amount), 0);
+  const approvedTransactions = transactions.filter((tx) => tx.status === TransactionStatus.approved);
+  const totalSentToChildren = approvedTransactions
+    .filter((tx) => tx.type === TransactionType.earn)
+    .reduce((sum, tx) => sum + Number(tx.amount), 0);
+  const pendingApprovals = transactions.filter((tx) => tx.status === TransactionStatus.pending).length;
+  const reservedForActiveAllowances = allowances.filter((item) => item.isActive).reduce((sum, item) => sum + Number(item.amount), 0);
+
+  let rows: Array<Record<string, string | number | boolean | null | undefined>> = [];
+  let filename = `report-${type}-${suffix}.csv`;
+
+  if (type === "parent-summary") {
+    rows = [{
+      range: suffix,
+      parentBalance: Number(parent.accountBalance),
+      totalDepositedLifetime: Number(parent.totalDeposited),
+      depositsInRange: totalDepositsInRange,
+      pendingApprovals,
+      reservedForActiveAllowances,
+      totalSentToChildren,
+    }];
+  } else if (type === "children-overview") {
+    rows = children.map((child) => {
+      const goalStats = goalsByChild.get(child.id) ?? { currentAmount: 0, completed: 0 };
+      const walletBalance = Number(child.wallet?.balance ?? 0);
+      const totalSaved = walletBalance + goalStats.currentAmount;
+      const completedGoals = goalStats.completed;
+      const completedChores = completedChoresByChild.get(child.id) ?? 0;
+      return {
+        childId: child.id,
+        childName: child.nickname,
+        age: child.age,
+        walletBalance,
+        walletTotalEarned: Number(child.wallet?.totalEarned ?? 0),
+        walletTotalSpent: Number(child.wallet?.totalSpent ?? 0),
+        savedInGoals: goalStats.currentAmount,
+        totalSaved,
+        goalsCompleted: completedGoals,
+        badgesEarned: completedGoals + completedChores,
+      };
+    });
+  } else if (type === "transactions") {
+    rows = transactions.map((tx) => ({
+      transactionId: tx.id,
+      childId: tx.childId,
+      childName: tx.child.nickname,
+      type: tx.type,
+      status: tx.status,
+      amount: Number(tx.amount),
+      description: tx.description ?? "",
+      createdAt: tx.createdAt.toISOString(),
+    }));
+  } else if (type === "pending") {
+    filename = `report-pending-${suffix}.csv`;
+    rows = transactions
+      .filter((tx) => tx.status === TransactionStatus.pending)
+      .map((tx) => ({
+        transactionId: tx.id,
+        childId: tx.childId,
+        childName: tx.child.nickname,
+        type: tx.type,
+        status: tx.status,
+        amount: Number(tx.amount),
+        description: tx.description ?? "",
+        createdAt: tx.createdAt.toISOString(),
+      }));
+  } else if (type === "goals") {
+    rows = goals.map((goal) => ({
+      goalId: goal.id,
+      childId: goal.childId,
+      childName: goal.child.nickname,
+      title: goal.title,
+      targetAmount: Number(goal.targetAmount),
+      currentAmount: Number(goal.currentAmount),
+      status: goal.status,
+      targetDate: goal.targetDate?.toISOString() ?? "",
+      completedAt: goal.completedAt?.toISOString() ?? "",
+    }));
+  } else if (type === "chores") {
+    rows = chores.map((chore) => ({
+      choreId: chore.id,
+      childId: chore.childId,
+      childName: chore.child.nickname,
+      title: chore.title,
+      status: chore.status,
+      rewardAmount: Number(chore.rewardAmount),
+      dueDate: chore.dueDate?.toISOString() ?? "",
+      completedAt: chore.completedAt?.toISOString() ?? "",
+    }));
+  } else if (type === "allowances") {
+    rows = allowances.map((item) => ({
+      allowanceId: item.id,
+      childId: item.childId,
+      childName: item.child.nickname,
+      title: item.title,
+      amount: Number(item.amount),
+      availableOn: item.availableOn.toISOString(),
+      isActive: item.isActive,
+      notes: item.notes ?? "",
+    }));
+  } else if (type === "learning") {
+    rows = learningAssignments.map((item) => ({
+      assignmentId: item.id,
+      childId: item.childId,
+      childName: item.child.nickname,
+      lessonId: item.lessonId,
+      lessonTitle: item.lesson.title,
+      status: item.status,
+      progressPercent: item.progressPercent,
+      assignedAt: item.assignedAt.toISOString(),
+      firstViewedAt: item.firstViewedAt?.toISOString() ?? "",
+      lastViewedAt: item.lastViewedAt?.toISOString() ?? "",
+      completedAt: item.completedAt?.toISOString() ?? "",
+    }));
+  } else if (type === "support") {
+    rows = supportTickets.map((item) => ({
+      ticketId: item.id,
+      issueType: item.issueType,
+      status: item.status,
+      createdAt: item.createdAt.toISOString(),
+      message: item.message,
+    }));
+  } else {
+    filename = `full-report-export-${suffix}.csv`;
+    rows = [
+      {
+        section: "summary",
+        key: "parent_balance",
+        value: Number(parent.accountBalance),
+      },
+      {
+        section: "summary",
+        key: "total_sent_to_children",
+        value: totalSentToChildren,
+      },
+      ...children.map((child) => {
+        const goalStats = goalsByChild.get(child.id) ?? { currentAmount: 0, completed: 0 };
+        const walletBalance = Number(child.wallet?.balance ?? 0);
+        const totalSaved = walletBalance + goalStats.currentAmount;
+        const completedGoals = goalStats.completed;
+        const completedChores = completedChoresByChild.get(child.id) ?? 0;
+        return {
+          section: "child_overview",
+          key: child.nickname,
+          value: `saved=${totalSaved}; goals=${completedGoals}; badges=${completedGoals + completedChores}`,
+        };
+      }),
+      ...transactions.slice(0, 300).map((tx) => ({
+        section: "transaction",
+        key: tx.id,
+        value: `${tx.child.nickname}; ${tx.type}; ${tx.status}; ${Number(tx.amount)}`,
+      })),
+    ];
+  }
+
+  return { rows, filename };
+}
+
+function filterReportRowsForPdfInclude(
+  type: ParentReportExportType,
+  rows: Array<Record<string, string | number | boolean | null | undefined>>,
+  includeRaw: string | undefined,
+): Array<Record<string, string | number | boolean | null | undefined>> {
+  const raw = includeRaw?.trim() ?? "";
+  if (!raw) return rows;
+  const parts = raw.split(",").map((s) => s.trim()).filter(Boolean);
+
+  if (type === "transactions" || type === "pending") {
+    const keyFor = (field: string): string | null => {
+      if (field === "date") return "createdAt";
+      if (field === "child") return "childName";
+      if (field === "type" || field === "status" || field === "description" || field === "amount") return field;
+      return null;
+    };
+    return rows.map((row) => {
+      const next: Record<string, string | number | boolean | null | undefined> = {};
+      for (const p of parts) {
+        const k = keyFor(p);
+        if (k && Object.prototype.hasOwnProperty.call(row, k)) {
+          next[k] = row[k];
+        }
+      }
+      return Object.keys(next).length > 0 ? next : row;
+    });
+  }
+
+  if (type === "children-overview") {
+    const allow = new Set(parts);
+    return rows.map((row) => {
+      const next: Record<string, string | number | boolean | null | undefined> = {};
+      for (const k of Object.keys(row)) {
+        if (allow.has(k)) next[k] = row[k];
+      }
+      return Object.keys(next).length > 0 ? next : row;
+    });
+  }
+
+  if (type === "full-export") {
+    const allow = new Set(parts);
+    return rows.filter((row) => allow.has(String(row.section ?? "")));
+  }
+
+  return rows;
+}
+
+function reportTypePdfTitle(type: ParentReportExportType): string {
+  switch (type) {
+    case "transactions":
+      return "Transaction history";
+    case "pending":
+      return "Pending requests";
+    case "children-overview":
+      return "Spending summary";
+    case "full-export":
+      return "Monthly report";
+    default:
+      return `Report (${type})`;
+  }
+}
+
+async function renderParentReportPdfBuffer(opts: {
+  title: string;
+  subtitle: string;
+  rows: Array<Record<string, string | number | boolean | null | undefined>>;
+}): Promise<Buffer> {
+  const doc = new PDFDocument({ margin: 36, size: "A4" });
+  const chunks: Buffer[] = [];
+  doc.on("data", (chunk) => chunks.push(chunk));
+
+  doc.fontSize(16).text(opts.title, { align: "left" });
+  doc.moveDown(0.3);
+  doc.fontSize(10).text(opts.subtitle);
+  doc.text(`Generated: ${new Date().toLocaleString()}`);
+  doc.moveDown(0.5);
+
+  if (opts.rows.length === 0) {
+    doc.fontSize(12).text("No records for this selection.");
+  } else {
+    const limit = 350;
+    opts.rows.slice(0, limit).forEach((row, index) => {
+      if (doc.y > 740) doc.addPage();
+      doc.fontSize(9).font("Helvetica-Bold").text(`${index + 1}.`);
+      doc.font("Helvetica");
+      Object.entries(row).forEach(([k, v]) => {
+        doc.fontSize(8).text(`  ${k}: ${v === null || v === undefined ? "" : String(v)}`);
+      });
+      doc.moveDown(0.25);
+    });
+    if (opts.rows.length > limit) {
+      doc.fontSize(9).text(`Showing ${limit} of ${opts.rows.length} rows.`);
+    }
+  }
+
+  doc.end();
+  await new Promise<void>((resolve, reject) => {
+    doc.on("end", () => resolve());
+    doc.on("error", reject);
+  });
+  return Buffer.concat(chunks);
+}
+
+router.get("/reports/pdf", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
+  try {
+    const range = (typeof req.query.range === "string" ? req.query.range : "this_month") as ParentReportRange;
+    const type = (typeof req.query.type === "string" ? req.query.type : "full-export") as ParentReportExportType;
+    const includeRaw = typeof req.query.include === "string" ? req.query.include : undefined;
+    const allowedTypes: ParentReportExportType[] = [
+      "parent-summary",
+      "children-overview",
+      "transactions",
+      "pending",
+      "goals",
+      "chores",
+      "allowances",
+      "learning",
+      "support",
+      "full-export",
+    ];
+    const allowedRanges: ParentReportRange[] = ["this_month", "last_30_days", "all_time"];
+    if (!allowedTypes.includes(type)) {
+      return res.status(400).json({ error: "Invalid report export type" });
+    }
+    if (!allowedRanges.includes(range)) {
+      return res.status(400).json({ error: "Invalid report range" });
+    }
+
+    const computed = await computeParentReportRows(req.user!.userId, range, type);
+    if (!computed) {
+      return res.status(404).json({ error: "Parent account not found" });
+    }
+
+    const rowsFiltered = filterReportRowsForPdfInclude(type, computed.rows, includeRaw);
+    const title = reportTypePdfTitle(type);
+    const suffixLabel =
+      range === "this_month" ? "This month" : range === "last_30_days" ? "Last 30 days" : "All time";
+    const subtitle = `Period: ${suffixLabel}`;
+    const pdfBuffer = await renderParentReportPdfBuffer({
+      title,
+      subtitle,
+      rows: rowsFiltered,
+    });
+
+    const pdfFilename = computed.filename.replace(/\.csv$/i, ".pdf");
+    return res.json({
+      filename: pdfFilename,
+      mimeType: "application/pdf",
+      pdfBase64: pdfBuffer.toString("base64"),
+      type,
+      range,
+      count: rowsFiltered.length,
+    });
+  } catch (error) {
+    console.error("Generate parent report PDF error:", error);
+    res.status(500).json({ error: "Failed to generate parent report PDF" });
   }
 });
 

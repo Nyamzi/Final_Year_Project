@@ -1,5 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
-import { Animated, Easing, Image, Pressable, ScrollView, Share, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import {
+  Animated,
+  Easing,
+  Image,
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+} from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import {
   apiDeactivateParentAccount,
@@ -23,7 +34,7 @@ import {
   apiParentPendingTransactions,
   apiParentPreferences,
   apiParentTransactionStatementPdf,
-  apiParentReportExport,
+  apiParentReportPdf,
   apiParentReportSummary,
   apiParentAssignLearningLesson,
   apiParentLearningAssignments,
@@ -163,6 +174,46 @@ function normalizeReportSummary(summary: unknown): ParentReportSummary {
   };
 }
 
+function reportRangeLabel(r: ReportRange): string {
+  if (r === "this_month") return "This month";
+  if (r === "last_30_days") return "Last 30 days";
+  return "All time";
+}
+
+const REPORT_CHILD_OVERVIEW_FIELDS = [
+  "childId",
+  "childName",
+  "age",
+  "walletBalance",
+  "walletTotalEarned",
+  "walletTotalSpent",
+  "savedInGoals",
+  "totalSaved",
+  "goalsCompleted",
+  "badgesEarned",
+] as const;
+
+const REPORT_CHILD_FIELD_LABELS: Record<(typeof REPORT_CHILD_OVERVIEW_FIELDS)[number], string> = {
+  childId: "Child ID",
+  childName: "Name",
+  age: "Age",
+  walletBalance: "Wallet balance",
+  walletTotalEarned: "Wallet total earned",
+  walletTotalSpent: "Wallet total spent",
+  savedInGoals: "Saved in goals",
+  totalSaved: "Total saved",
+  goalsCompleted: "Goals completed",
+  badgesEarned: "Badges earned",
+};
+
+const REPORT_FULL_EXPORT_SECTIONS = ["summary", "child_overview", "transaction"] as const;
+
+const REPORT_SECTION_LABELS: Record<(typeof REPORT_FULL_EXPORT_SECTIONS)[number], string> = {
+  summary: "Summary totals",
+  child_overview: "Per-child overview",
+  transaction: "Transactions (up to 300)",
+};
+
 function getInitials(name: string): string {
   return name
     .split(/\s+/)
@@ -250,13 +301,15 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
   const [limitsChildDropdownOpen, setLimitsChildDropdownOpen] = useState(false);
   const [goalsChildDropdownOpen, setGoalsChildDropdownOpen] = useState(false);
   const [fundChildDropdownOpen, setFundChildDropdownOpen] = useState(false);
-  const [txStatementChildId, setTxStatementChildId] = useState("all");
-  const [txStatementType, setTxStatementType] = useState<"all" | "earn" | "spend">("all");
-  const [txStatementStatus, setTxStatementStatus] = useState<"all" | "pending" | "approved" | "rejected">("all");
-  const [txChildDropdownOpen, setTxChildDropdownOpen] = useState(false);
-  const [txTypeDropdownOpen, setTxTypeDropdownOpen] = useState(false);
-  const [txStatusDropdownOpen, setTxStatusDropdownOpen] = useState(false);
-  const [txStatementIncludeFields, setTxStatementIncludeFields] = useState<StatementIncludeField[]>([
+  /** PDF export modal only — not shown on the transactions page */
+  const [pdfExportChildId, setPdfExportChildId] = useState("all");
+  const [pdfExportTxType, setPdfExportTxType] = useState<"all" | "earn" | "spend">("all");
+  const [pdfExportTxStatus, setPdfExportTxStatus] = useState<"all" | "pending" | "approved" | "rejected">("all");
+  const [pdfExportChildDropdownOpen, setPdfExportChildDropdownOpen] = useState(false);
+  const [pdfExportTypeDropdownOpen, setPdfExportTypeDropdownOpen] = useState(false);
+  const [pdfExportStatusDropdownOpen, setPdfExportStatusDropdownOpen] = useState(false);
+  const [pdfExportColumnsDropdownOpen, setPdfExportColumnsDropdownOpen] = useState(false);
+  const [pdfExportIncludeFields, setPdfExportIncludeFields] = useState<StatementIncludeField[]>([
     "date",
     "child",
     "type",
@@ -264,6 +317,7 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
     "description",
     "amount",
   ]);
+  const [showTransactionPdfModal, setShowTransactionPdfModal] = useState(false);
 
   const [savingsGoals, setSavingsGoals] = useState<ParentSavingsGoalSummary[]>([]);
   const [allChildGoals, setAllChildGoals] = useState<Array<ParentSavingsGoalSummary & { childId: string; childName: string }>>([]);
@@ -318,7 +372,20 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
   const [notifications, setNotifications] = useState<ParentNotification[]>([]);
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
   const [reportSummary, setReportSummary] = useState<ParentReportSummary>(EMPTY_REPORT_SUMMARY);
-  const [reportRange, setReportRange] = useState<ReportRange>("this_month");
+  const [showReportPdfModal, setShowReportPdfModal] = useState(false);
+  const [reportPdfType, setReportPdfType] = useState<ParentReportExportType | null>(null);
+  const [reportPdfRange, setReportPdfRange] = useState<ReportRange>("this_month");
+  const [reportPdfTxInclude, setReportPdfTxInclude] = useState<StatementIncludeField[]>([
+    "date",
+    "child",
+    "type",
+    "status",
+    "description",
+    "amount",
+  ]);
+  const [reportPdfChildFields, setReportPdfChildFields] = useState<string[]>([...REPORT_CHILD_OVERVIEW_FIELDS]);
+  const [reportPdfFullSections, setReportPdfFullSections] = useState<string[]>([...REPORT_FULL_EXPORT_SECTIONS]);
+  const [reportPdfTxColumnsOpen, setReportPdfTxColumnsOpen] = useState(false);
 
   const totalChildBalance = useMemo(
     () => children.reduce((sum, child) => sum + (child.wallet?.balance ?? 0), 0),
@@ -371,7 +438,7 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
         apiParentPublishedLessons().catch(() => ({ lessons: [] as AdminLesson[] })),
         apiParentLearningAssignments().catch(() => ({ assignments: [] as ParentLearningAssignment[] })),
         apiParentPreferences(),
-        apiParentReportSummary(reportRange),
+        apiParentReportSummary("this_month"),
         apiParentSupportTickets(),
         apiParentNotifications(),
         apiParentAccountBalance(),
@@ -407,7 +474,7 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
 
   useEffect(() => {
     loadParentData();
-  }, [reportRange]);
+  }, []);
 
   useEffect(() => {
     if (!isMobile) {
@@ -1169,50 +1236,144 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
           ? "Completed on time"
           : "Completed after deadline"
     : "";
-  const filteredTransactions = allTransactions.filter((item) => {
-    if (txStatementChildId !== "all" && item.childId !== txStatementChildId) return false;
-    if (txStatementType !== "all" && item.type !== txStatementType) return false;
-    if (txStatementStatus !== "all" && item.status !== txStatementStatus) return false;
-    return true;
-  });
+  const pdfExportAccountLabel =
+    pdfExportChildId === "all"
+      ? "All accounts"
+      : pdfExportChildId === "parent_wallet"
+        ? "Parent wallet"
+        : children.find((child) => child.id === pdfExportChildId)?.nickname ?? "Account";
 
-  function toggleStatementIncludeField(field: StatementIncludeField) {
-    setTxStatementIncludeFields((prev) => {
+  function togglePdfExportIncludeField(field: StatementIncludeField) {
+    setPdfExportIncludeFields((prev) => {
       if (prev.includes(field)) {
         return prev.length > 1 ? prev.filter((item) => item !== field) : prev;
       }
       return [...prev, field];
     });
   }
-  async function handleDownloadReport(type: ParentReportExportType) {
+
+  function statementIncludeFieldLabel(field: StatementIncludeField) {
+    const labels: Record<StatementIncludeField, string> = {
+      date: "Date",
+      child: "Account",
+      type: "Type",
+      status: "Status",
+      description: "Description",
+      amount: "Amount",
+    };
+    return labels[field];
+  }
+
+  function pdfColumnsTriggerLabel(fields: StatementIncludeField[]) {
+    if (fields.length === 0) return "Select columns…";
+    if (fields.length === 6) return "All columns";
+    const labels = fields.map((f) => statementIncludeFieldLabel(f)).join(", ");
+    return labels.length > 42 ? `${fields.length} of 6 columns` : labels;
+  }
+
+  function closePdfExportDropdownsExcept(except: "account" | "type" | "status" | "columns" | "none") {
+    if (except !== "account") setPdfExportChildDropdownOpen(false);
+    if (except !== "type") setPdfExportTypeDropdownOpen(false);
+    if (except !== "status") setPdfExportStatusDropdownOpen(false);
+    if (except !== "columns") setPdfExportColumnsDropdownOpen(false);
+  }
+  function openReportPdfModal(type: ParentReportExportType) {
+    setReportPdfType(type);
+    setReportPdfRange("this_month");
+    setReportPdfTxInclude(["date", "child", "type", "status", "description", "amount"]);
+    setReportPdfChildFields([...REPORT_CHILD_OVERVIEW_FIELDS]);
+    setReportPdfFullSections([...REPORT_FULL_EXPORT_SECTIONS]);
+    setReportPdfTxColumnsOpen(false);
+    setShowReportPdfModal(true);
+  }
+
+  function toggleReportPdfTxField(field: StatementIncludeField) {
+    setReportPdfTxInclude((prev) => {
+      if (prev.includes(field)) {
+        return prev.length > 1 ? prev.filter((item) => item !== field) : prev;
+      }
+      return [...prev, field];
+    });
+  }
+
+  function toggleReportPdfChildField(key: string) {
+    setReportPdfChildFields((prev) => {
+      if (prev.includes(key)) {
+        return prev.length > 1 ? prev.filter((item) => item !== key) : prev;
+      }
+      return [...prev, key];
+    });
+  }
+
+  function toggleReportPdfSection(section: string) {
+    setReportPdfFullSections((prev) => {
+      if (prev.includes(section)) {
+        return prev.length > 1 ? prev.filter((item) => item !== section) : prev;
+      }
+      return [...prev, section];
+    });
+  }
+
+  function buildReportPdfInclude(): string | undefined {
+    if (!reportPdfType) return undefined;
+    if (reportPdfType === "transactions" || reportPdfType === "pending") {
+      return reportPdfTxInclude.join(",");
+    }
+    if (reportPdfType === "children-overview") {
+      return reportPdfChildFields.join(",");
+    }
+    if (reportPdfType === "full-export") {
+      return reportPdfFullSections.join(",");
+    }
+    return undefined;
+  }
+
+  function reportPdfTypeLabel(type: ParentReportExportType): string {
+    if (type === "transactions") return "Transaction history";
+    if (type === "pending") return "Pending requests";
+    if (type === "children-overview") return "Spending summary";
+    if (type === "full-export") return "Monthly report";
+    return "Report";
+  }
+
+  async function handleDownloadReportPdf() {
+    if (!reportPdfType) return;
     try {
       clearMessages();
-      const exported = await apiParentReportExport(type, reportRange);
-      if (!exported.csv || exported.rowCount === 0) {
-        setError("No data available for this report in the selected range.");
+      setSubmitting(true);
+      const include = buildReportPdfInclude();
+      const response = await apiParentReportPdf(reportPdfType, reportPdfRange, include ? { include } : undefined);
+
+      if (!response.pdfBase64) {
+        setError("Could not generate report PDF.");
         return;
       }
 
       if (typeof document !== "undefined") {
-        const blob = new Blob([exported.csv], { type: "text/csv;charset=utf-8;" });
+        const binary = atob(response.pdfBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        const blob = new Blob([bytes], { type: response.mimeType || "application/pdf" });
         const url = URL.createObjectURL(blob);
         const link = document.createElement("a");
         link.href = url;
-        link.download = exported.filename;
+        link.download = response.filename;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
         URL.revokeObjectURL(url);
+        setStatus(`Downloaded ${response.filename}`);
+        setShowReportPdfModal(false);
+        setReportPdfTxColumnsOpen(false);
       } else {
-        await Share.share({
-          title: exported.filename,
-          message: `${exported.filename}\n\n${exported.csv}`,
-        });
+        setError("PDF download is available on web for now.");
       }
-
-      setStatus(`Downloaded ${exported.filename}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to download report.");
+      setError(err instanceof Error ? err.message : "Failed to download report PDF.");
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -1221,10 +1382,10 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
       clearMessages();
       setSubmitting(true);
       const response = await apiParentTransactionStatementPdf({
-        childId: txStatementChildId,
-        txType: txStatementType,
-        txStatus: txStatementStatus,
-        include: txStatementIncludeFields,
+        childId: pdfExportChildId === "all" ? undefined : pdfExportChildId,
+        txType: pdfExportTxType,
+        txStatus: pdfExportTxStatus,
+        include: pdfExportIncludeFields,
       });
 
       if (!response.pdfBase64) {
@@ -1248,6 +1409,11 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
         document.body.removeChild(link);
         URL.revokeObjectURL(url);
         setStatus(`Downloaded ${response.filename}`);
+        setPdfExportChildDropdownOpen(false);
+        setPdfExportTypeDropdownOpen(false);
+        setPdfExportStatusDropdownOpen(false);
+        setPdfExportColumnsDropdownOpen(false);
+        setShowTransactionPdfModal(false);
       } else {
         setError("PDF download is available on web for now.");
       }
@@ -2160,11 +2326,22 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
                 <View style={styles.goalsTopBar}>
                   <View>
                     <Text style={styles.pageTitle}>Transactions</Text>
-                    <Text style={styles.childrenSubtitle}>View and track all wallet transactions across your children's accounts.</Text>
+                    <Text style={styles.childrenSubtitle}>
+                      Your parent wallet activity and every transaction on your children&apos;s wallets (no row limit).
+                    </Text>
                   </View>
                   <View style={styles.childrenTopActions}>
-                    <Pressable style={styles.childrenTopBtn} onPress={handleExportTransactionStatementPdf}>
-                      <Text style={styles.childrenTopBtnText}>Export Statement</Text>
+                    <Pressable
+                      style={styles.childrenTopBtn}
+                      onPress={() => {
+                        setPdfExportChildDropdownOpen(false);
+                        setPdfExportTypeDropdownOpen(false);
+                        setPdfExportStatusDropdownOpen(false);
+                        setPdfExportColumnsDropdownOpen(false);
+                        setShowTransactionPdfModal(true);
+                      }}
+                    >
+                      <Text style={styles.childrenTopBtnText}>Export PDF…</Text>
                     </Pressable>
                   </View>
                 </View>
@@ -2195,138 +2372,18 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
                 <View style={styles.childrenLayout}>
                   <View style={styles.childrenMainCol}>
                     <View style={styles.desktopPanel}>
-                      <Text style={styles.formCardTitle}>Statement Filters</Text>
-                      <View style={styles.dropdownWrap}>
-                        <Text style={styles.childSelectorLabel}>Child</Text>
-                        <Pressable
-                          style={styles.dropdownButton}
-                          onPress={() => {
-                            setTxChildDropdownOpen((prev) => !prev);
-                            setTxTypeDropdownOpen(false);
-                            setTxStatusDropdownOpen(false);
-                          }}
-                        >
-                          <Text style={styles.dropdownButtonText}>
-                            {txStatementChildId === "all"
-                              ? "All Children"
-                              : children.find((child) => child.id === txStatementChildId)?.nickname ?? "All Children"}
-                          </Text>
-                          <Text style={styles.dropdownChevron}>{txChildDropdownOpen ? "▲" : "▼"}</Text>
-                        </Pressable>
-                        {txChildDropdownOpen ? (
-                          <View style={styles.dropdownMenu}>
-                            <Pressable
-                              style={styles.dropdownItem}
-                              onPress={() => {
-                                setTxStatementChildId("all");
-                                setTxChildDropdownOpen(false);
-                              }}
-                            >
-                              <Text style={styles.dropdownItemText}>All Children</Text>
-                            </Pressable>
-                            {children.map((child) => (
-                              <Pressable
-                                key={child.id}
-                                style={styles.dropdownItem}
-                                onPress={() => {
-                                  setTxStatementChildId(child.id);
-                                  setTxChildDropdownOpen(false);
-                                }}
-                              >
-                                <Text style={styles.dropdownItemText}>{child.nickname}</Text>
-                              </Pressable>
-                            ))}
-                          </View>
-                        ) : null}
-                      </View>
-
-                      <View style={styles.dropdownWrap}>
-                        <Text style={styles.childSelectorLabel}>Type</Text>
-                        <Pressable
-                          style={styles.dropdownButton}
-                          onPress={() => {
-                            setTxTypeDropdownOpen((prev) => !prev);
-                            setTxChildDropdownOpen(false);
-                            setTxStatusDropdownOpen(false);
-                          }}
-                        >
-                          <Text style={styles.dropdownButtonText}>{txStatementType === "all" ? "All Types" : txStatementType}</Text>
-                          <Text style={styles.dropdownChevron}>{txTypeDropdownOpen ? "▲" : "▼"}</Text>
-                        </Pressable>
-                        {txTypeDropdownOpen ? (
-                          <View style={styles.dropdownMenu}>
-                            {(["all", "earn", "spend"] as const).map((type) => (
-                              <Pressable
-                                key={type}
-                                style={styles.dropdownItem}
-                                onPress={() => {
-                                  setTxStatementType(type);
-                                  setTxTypeDropdownOpen(false);
-                                }}
-                              >
-                                <Text style={styles.dropdownItemText}>{type === "all" ? "All Types" : type}</Text>
-                              </Pressable>
-                            ))}
-                          </View>
-                        ) : null}
-                      </View>
-
-                      <View style={styles.dropdownWrap}>
-                        <Text style={styles.childSelectorLabel}>Status</Text>
-                        <Pressable
-                          style={styles.dropdownButton}
-                          onPress={() => {
-                            setTxStatusDropdownOpen((prev) => !prev);
-                            setTxChildDropdownOpen(false);
-                            setTxTypeDropdownOpen(false);
-                          }}
-                        >
-                          <Text style={styles.dropdownButtonText}>{txStatementStatus === "all" ? "All Statuses" : txStatementStatus}</Text>
-                          <Text style={styles.dropdownChevron}>{txStatusDropdownOpen ? "▲" : "▼"}</Text>
-                        </Pressable>
-                        {txStatusDropdownOpen ? (
-                          <View style={styles.dropdownMenu}>
-                            {(["all", "pending", "approved", "rejected"] as const).map((statusItem) => (
-                              <Pressable
-                                key={statusItem}
-                                style={styles.dropdownItem}
-                                onPress={() => {
-                                  setTxStatementStatus(statusItem);
-                                  setTxStatusDropdownOpen(false);
-                                }}
-                              >
-                                <Text style={styles.dropdownItemText}>{statusItem === "all" ? "All Statuses" : statusItem}</Text>
-                              </Pressable>
-                            ))}
-                          </View>
-                        ) : null}
-                      </View>
-
-                      <Text style={styles.childSelectorLabel}>Choose what to include in the PDF statement</Text>
-                      <View style={styles.chipRow}>
-                        {(["date", "child", "type", "status", "description", "amount"] as StatementIncludeField[]).map((field) => (
-                          <Pressable
-                            key={field}
-                            style={[styles.chip, txStatementIncludeFields.includes(field) && styles.chipActive]}
-                            onPress={() => toggleStatementIncludeField(field)}
-                          >
-                            <Text style={[styles.chipText, txStatementIncludeFields.includes(field) && styles.chipTextActive]}>
-                              {field}
-                            </Text>
-                          </Pressable>
-                        ))}
-                      </View>
+                      <Text style={styles.formCardTitle}>Transaction history</Text>
 
                       <View style={styles.transactionsTableHeader}>
                         <Text style={styles.transactionsHeadCell}>Date</Text>
-                        <Text style={styles.transactionsHeadCell}>Child</Text>
+                        <Text style={styles.transactionsHeadCell}>Account</Text>
                         <Text style={styles.transactionsHeadCell}>Type</Text>
                         <Text style={styles.transactionsHeadCell}>Description</Text>
                         <Text style={styles.transactionsHeadCell}>Amount</Text>
                         <Text style={styles.transactionsHeadCell}>Status</Text>
                       </View>
 
-                      {filteredTransactions.map((item) => (
+                      {allTransactions.map((item) => (
                         <View key={item.id} style={styles.transactionsRow}>
                           <Text style={styles.transactionsCell}>{new Date(item.createdAt).toLocaleDateString()}</Text>
                           <Text style={styles.transactionsCell}>{item.childName}</Text>
@@ -2340,7 +2397,7 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
                           </View>
                         </View>
                       ))}
-                      {filteredTransactions.length === 0 ? <Text style={styles.activityEmpty}>No transactions found for current filters.</Text> : null}
+                      {allTransactions.length === 0 ? <Text style={styles.activityEmpty}>No transactions yet.</Text> : null}
                     </View>
                   </View>
 
@@ -2363,19 +2420,32 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
                         </View>
                       ))}
                     </View>
-
-                    <View style={styles.desktopPanel}>
-                      <Text style={styles.sectionTitle}>Quick Actions</Text>
-                      <View style={styles.childrenQuickItem}><Text style={styles.childrenQuickText}>Send Money</Text></View>
-                      <View style={styles.childrenQuickItem}><Text style={styles.childrenQuickText}>Request Money</Text></View>
-                      <View style={styles.childrenQuickItem}><Text style={styles.childrenQuickText}>Export Statement</Text></View>
-                    </View>
                   </View>
                 </View>
               </>
-            ) : allTransactions.length === 0 ? (
+            ) : (
+              <>
+                <View style={styles.goalsTopBar}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.pageTitle}>Transactions</Text>
+                    <Text style={styles.childrenSubtitle}>Parent wallet and children&apos;s wallets.</Text>
+                  </View>
+                  <Pressable
+                    style={[styles.childrenTopBtn, styles.childrenTopBtnPrimary]}
+                    onPress={() => {
+                      setPdfExportChildDropdownOpen(false);
+                      setPdfExportTypeDropdownOpen(false);
+                      setPdfExportStatusDropdownOpen(false);
+                      setPdfExportColumnsDropdownOpen(false);
+                      setShowTransactionPdfModal(true);
+                    }}
+                  >
+                    <Text style={[styles.childrenTopBtnText, styles.childrenTopBtnTextPrimary]}>Export PDF…</Text>
+                  </Pressable>
+                </View>
+                {allTransactions.length === 0 ? (
               <View style={[styles.activityCard, isMobile && styles.mobileSurfaceCard]}>
-                <Text style={styles.activityEmpty}>No transactions found yet.</Text>
+                <Text style={styles.activityEmpty}>No transactions yet.</Text>
               </View>
             ) : (
               <View style={[styles.formCard, isMobile && styles.mobileSurfaceCard]}>
@@ -2402,6 +2472,8 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
                   </View>
                 ))}
               </View>
+            )}
+              </>
             )}
           </View>
         )}
@@ -3201,176 +3273,84 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
         {/* REPORTS */}
         {!loading && tab === "reports" && (
           <View style={styles.section}>
-            {!isMobile ? (
-              <>
-                <View style={styles.goalsTopBar}>
-                  <View>
-                    <Text style={styles.pageTitle}>Reports</Text>
-                    <Text style={styles.childrenSubtitle}>View insights and activity reports across all accounts.</Text>
-                  </View>
-                  <View style={styles.childrenTopActions}>
-                    <Pressable
-                      style={[styles.childrenTopBtn, reportRange === "this_month" && styles.childrenTopBtnPrimary]}
-                      onPress={() => setReportRange("this_month")}
-                    >
-                      <Text style={[styles.childrenTopBtnText, reportRange === "this_month" && styles.childrenTopBtnTextPrimary]}>This Month</Text>
-                    </Pressable>
-                    <Pressable
-                      style={[styles.childrenTopBtn, reportRange === "last_30_days" && styles.childrenTopBtnPrimary]}
-                      onPress={() => setReportRange("last_30_days")}
-                    >
-                      <Text style={[styles.childrenTopBtnText, reportRange === "last_30_days" && styles.childrenTopBtnTextPrimary]}>Last 30 Days</Text>
-                    </Pressable>
-                    <Pressable
-                      style={[styles.childrenTopBtn, reportRange === "all_time" && styles.childrenTopBtnPrimary]}
-                      onPress={() => setReportRange("all_time")}
-                    >
-                      <Text style={[styles.childrenTopBtnText, reportRange === "all_time" && styles.childrenTopBtnTextPrimary]}>All Time</Text>
-                    </Pressable>
-                  </View>
+            <View style={[styles.goalsTopBar, isMobile && styles.reportsTopBarMobile]}>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.pageTitle, isMobile && styles.mobilePageTitle]}>Reports</Text>
+                <Text style={styles.childrenSubtitle}>
+                  The figures on these cards are for this month only. For a PDF, you choose the time range and what to include.
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.reportsGrid}>
+              {/* 1. Transaction history */}
+              <View style={[styles.reportCard, isMobile && styles.reportCardMobile]}>
+                <Text style={styles.reportCardKicker}>1</Text>
+                <Text style={styles.reportCardTitle}>Transaction history</Text>
+                <Text style={styles.reportCardDesc}>Every child-wallet movement in the period you choose (types, status, amounts).</Text>
+                <View style={styles.reportCardStats}>
+                  <Text style={styles.reportCardStatLine}>
+                    {reportSummary.children.approvedCount} approved · {reportSummary.children.pendingCount} pending
+                  </Text>
                 </View>
-                <View style={styles.desktopKpiGrid}>
-                  <View style={styles.desktopKpiCard}><Text style={styles.desktopKpiLabel}>Parent Balance</Text><Text style={styles.desktopKpiValue}>{formatMoney(reportSummary.parent.currentBalance)}</Text></View>
-                  <View style={styles.desktopKpiCard}><Text style={styles.desktopKpiLabel}>Total Deposited</Text><Text style={styles.desktopKpiValue}>{formatMoney(reportSummary.parent.totalDeposited)}</Text></View>
-                  <View style={styles.desktopKpiCard}><Text style={styles.desktopKpiLabel}>Children Wallets</Text><Text style={styles.desktopKpiValue}>{formatMoney(reportSummary.children.walletBalance)}</Text></View>
-                  <View style={styles.desktopKpiCard}><Text style={styles.desktopKpiLabel}>Sent to Children</Text><Text style={styles.desktopKpiValue}>{formatMoney(reportSummary.parent.totalSentToChildren)}</Text></View>
+                <Pressable style={[styles.reportCardBtn, styles.reportCardBtnPrimary]} onPress={() => openReportPdfModal("transactions")}>
+                  <Text style={[styles.reportCardBtnText, styles.reportCardBtnTextPrimary]}>Download PDF</Text>
+                </Pressable>
+              </View>
+
+              {/* 2. Spending summary */}
+              <View style={[styles.reportCard, isMobile && styles.reportCardMobile]}>
+                <Text style={styles.reportCardKicker}>2</Text>
+                <Text style={styles.reportCardTitle}>Spending summary</Text>
+                <Text style={styles.reportCardDesc}>Per-child balances and earn/spend totals for the period you choose.</Text>
+                <View style={styles.reportCardStats}>
+                  <Text style={styles.reportCardStatLine}>Total spent (this month): {formatMoney(reportSummary.children.totalSpent)}</Text>
+                  <Text style={styles.reportCardStatLine}>Total earned (this month): {formatMoney(reportSummary.children.totalEarned)}</Text>
                 </View>
-                <View style={styles.childrenLayout}>
-                  <View style={styles.childrenMainCol}>
-                    <View style={styles.desktopPanel}>
-                      <Text style={styles.sectionTitle}>Parent Account Summary</Text>
-                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Current balance</Text><Text style={styles.listItemMain}>{formatMoney(reportSummary.parent.currentBalance)}</Text></View>
-                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Deposit transactions</Text><Text style={styles.listItemMain}>{reportSummary.parent.depositTransactions}</Text></View>
-                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Reserved for active allowances</Text><Text style={styles.listItemMain}>{formatMoney(reportSummary.parent.reservedForActiveAllowances)}</Text></View>
-                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Total sent to children</Text><Text style={styles.listItemMain}>{formatMoney(reportSummary.parent.totalSentToChildren)}</Text></View>
-                    </View>
-                    <View style={styles.desktopPanel}>
-                      <Text style={styles.sectionTitle}>Children Account Summary</Text>
-                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Children accounts</Text><Text style={styles.listItemMain}>{reportSummary.children.childCount}</Text></View>
-                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Approved transactions</Text><Text style={styles.listItemMain}>{reportSummary.children.approvedCount}</Text></View>
-                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Pending approvals</Text><Text style={styles.listItemMain}>{reportSummary.children.pendingCount}</Text></View>
-                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Total children spending</Text><Text style={styles.listItemMain}>{formatMoney(reportSummary.children.totalSpent)}</Text></View>
-                    </View>
-                  </View>
-                  <View style={styles.childrenSideCol}>
-                    <View style={styles.desktopPanel}>
-                      <Text style={styles.sectionTitle}>Children Progress</Text>
-                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Goals completed</Text><Text style={styles.listItemMain}>{reportSummary.children.goalsCompleted}</Text></View>
-                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Chores completed</Text><Text style={styles.listItemMain}>{reportSummary.children.choresCompleted}</Text></View>
-                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Lifetime earned</Text><Text style={styles.listItemMain}>{formatMoney(reportSummary.children.lifetimeEarned)}</Text></View>
-                      <View style={styles.goalsLegendItem}><Text style={styles.childrenSummaryLabel}>Lifetime spent</Text><Text style={styles.listItemMain}>{formatMoney(reportSummary.children.lifetimeSpent)}</Text></View>
-                    </View>
-                    <View style={styles.desktopPanel}>
-                      <Text style={styles.sectionTitle}>Report Notes</Text>
-                      <Text style={styles.listItemMeta}>Values are aggregated from your parent wallet, child wallets, transactions, goals, chores, and deposits.</Text>
-                      <Text style={styles.listItemMeta}>Use this page for a quick health check of both parent and child finances.</Text>
-                    </View>
-                    <View style={styles.desktopPanel}>
-                      <Text style={styles.sectionTitle}>Available Report Data & Downloads</Text>
-                      <Text style={styles.listItemMeta}>All datasets below are sourced from your database records for the selected range.</Text>
-                      <View style={styles.goalsLegendItem}>
-                        <Text style={styles.childrenSummaryLabel}>Parent account summary</Text>
-                        <Pressable style={styles.childrenTopBtn} onPress={() => handleDownloadReport("parent-summary")}><Text style={styles.childrenTopBtnText}>Download CSV</Text></Pressable>
-                      </View>
-                      <View style={styles.goalsLegendItem}>
-                        <Text style={styles.childrenSummaryLabel}>Children overview ({children.length} records)</Text>
-                        <Pressable style={styles.childrenTopBtn} onPress={() => handleDownloadReport("children-overview")}><Text style={styles.childrenTopBtnText}>Download CSV</Text></Pressable>
-                      </View>
-                      <View style={styles.goalsLegendItem}>
-                        <Text style={styles.childrenSummaryLabel}>Transactions ({allTransactions.length} records)</Text>
-                        <Pressable style={styles.childrenTopBtn} onPress={() => handleDownloadReport("transactions")}><Text style={styles.childrenTopBtnText}>Download CSV</Text></Pressable>
-                      </View>
-                      <View style={styles.goalsLegendItem}>
-                        <Text style={styles.childrenSummaryLabel}>Savings goals ({allChildGoals.length} records)</Text>
-                        <Pressable style={styles.childrenTopBtn} onPress={() => handleDownloadReport("goals")}><Text style={styles.childrenTopBtnText}>Download CSV</Text></Pressable>
-                      </View>
-                      <View style={styles.goalsLegendItem}>
-                        <Text style={styles.childrenSummaryLabel}>Chores ({chores.length} records)</Text>
-                        <Pressable style={styles.childrenTopBtn} onPress={() => handleDownloadReport("chores")}><Text style={styles.childrenTopBtnText}>Download CSV</Text></Pressable>
-                      </View>
-                      <View style={styles.goalsLegendItem}>
-                        <Text style={styles.childrenSummaryLabel}>Allowances ({allowances.length} records)</Text>
-                        <Pressable style={styles.childrenTopBtn} onPress={() => handleDownloadReport("allowances")}><Text style={styles.childrenTopBtnText}>Download CSV</Text></Pressable>
-                      </View>
-                      <View style={styles.goalsLegendItem}>
-                        <Text style={styles.childrenSummaryLabel}>Learning assignments ({learningAssignments.length} records)</Text>
-                        <Pressable style={styles.childrenTopBtn} onPress={() => handleDownloadReport("learning")}><Text style={styles.childrenTopBtnText}>Download CSV</Text></Pressable>
-                      </View>
-                      <View style={styles.goalsLegendItem}>
-                        <Text style={styles.childrenSummaryLabel}>Support tickets ({supportTickets.length} records)</Text>
-                        <Pressable style={styles.childrenTopBtn} onPress={() => handleDownloadReport("support")}><Text style={styles.childrenTopBtnText}>Download CSV</Text></Pressable>
-                      </View>
-                      <View style={styles.goalsLegendItem}>
-                        <Text style={styles.childrenSummaryLabel}>Combined export (summary + key datasets)</Text>
-                        <Pressable style={[styles.childrenTopBtn, styles.childrenTopBtnPrimary]} onPress={() => handleDownloadReport("full-export")}><Text style={[styles.childrenTopBtnText, styles.childrenTopBtnTextPrimary]}>Download Full CSV</Text></Pressable>
-                      </View>
-                    </View>
-                  </View>
+                <Pressable style={[styles.reportCardBtn, styles.reportCardBtnPrimary]} onPress={() => openReportPdfModal("children-overview")}>
+                  <Text style={[styles.reportCardBtnText, styles.reportCardBtnTextPrimary]}>Download PDF</Text>
+                </Pressable>
+              </View>
+
+              {/* 3. Pending requests */}
+              <View style={[styles.reportCard, isMobile && styles.reportCardMobile]}>
+                <Text style={styles.reportCardKicker}>3</Text>
+                <Text style={styles.reportCardTitle}>Pending requests</Text>
+                <Text style={styles.reportCardDesc}>Spend and withdrawal requests waiting for your approval.</Text>
+                <View style={styles.reportCardStats}>
+                  <Text style={styles.reportCardStatLine}>{pending.length} pending</Text>
+                  {pending.slice(0, 4).map((p) => (
+                    <Text key={p.id} style={styles.reportCardPendingLine}>
+                      {p.childName} · {p.type} · {formatMoney(p.amount)}
+                    </Text>
+                  ))}
+                  {pending.length === 0 ? <Text style={styles.reportCardMuted}>No pending requests.</Text> : null}
                 </View>
-              </>
-            ) : (
-              <>
-                <Text style={[styles.pageTitle, isMobile && styles.mobilePageTitle]}>Reports & Analytics</Text>
-                <View style={[styles.formCard, isMobile && styles.mobileSurfaceCard]}>
-                  <Text style={styles.formCardTitle}>Report Range</Text>
-                  <View style={styles.toggleRowGroup}>
-                    <Pressable
-                      style={[styles.chipBtn, reportRange === "this_month" && styles.chipBtnActive]}
-                      onPress={() => setReportRange("this_month")}
-                    >
-                      <Text style={[styles.chipBtnText, reportRange === "this_month" && styles.chipBtnTextActive]}>This Month</Text>
-                    </Pressable>
-                    <Pressable
-                      style={[styles.chipBtn, reportRange === "last_30_days" && styles.chipBtnActive]}
-                      onPress={() => setReportRange("last_30_days")}
-                    >
-                      <Text style={[styles.chipBtnText, reportRange === "last_30_days" && styles.chipBtnTextActive]}>Last 30 Days</Text>
-                    </Pressable>
-                    <Pressable
-                      style={[styles.chipBtn, reportRange === "all_time" && styles.chipBtnActive]}
-                      onPress={() => setReportRange("all_time")}
-                    >
-                      <Text style={[styles.chipBtnText, reportRange === "all_time" && styles.chipBtnTextActive]}>All Time</Text>
-                    </Pressable>
-                  </View>
+                <View style={styles.reportCardActionsRow}>
+                  <Pressable style={[styles.reportCardBtn, styles.reportCardBtnPrimary, styles.reportCardBtnFlex]} onPress={() => openReportPdfModal("pending")}>
+                    <Text style={[styles.reportCardBtnText, styles.reportCardBtnTextPrimary]}>Download PDF</Text>
+                  </Pressable>
+                  <Pressable style={[styles.reportCardBtn, styles.reportCardBtnFlex]} onPress={() => handleTabPress("transactions")}>
+                    <Text style={styles.reportCardBtnText}>Review</Text>
+                  </Pressable>
                 </View>
-                <View style={styles.statRow}>
-                  <View style={[styles.statCard, isMobile && styles.statCardMobile]}>
-                    <Text style={styles.statLabel}>Parent balance: {formatMoney(reportSummary.parent.currentBalance)}</Text>
-                  </View>
-                  <View style={[styles.statCard, isMobile && styles.statCardMobile]}>
-                    <Text style={styles.statLabel}>Total deposited: {formatMoney(reportSummary.parent.totalDeposited)}</Text>
-                  </View>
-                  <View style={[styles.statCard, isMobile && styles.statCardMobile]}>
-                    <Text style={styles.statLabel}>Children wallet balance: {formatMoney(reportSummary.children.walletBalance)}</Text>
-                  </View>
-                  <View style={[styles.statCard, isMobile && styles.statCardMobile]}>
-                    <Text style={styles.statLabel}>Children pending approvals: {reportSummary.children.pendingCount}</Text>
-                  </View>
-                  <View style={[styles.statCard, isMobile && styles.statCardMobile]}>
-                    <Text style={styles.statLabel}>Children total spent: {formatMoney(reportSummary.children.totalSpent)}</Text>
-                  </View>
-                  <View style={[styles.statCard, isMobile && styles.statCardMobile]}>
-                    <Text style={styles.statLabel}>Goals completed: {reportSummary.children.goalsCompleted}</Text>
-                  </View>
+              </View>
+
+              {/* 4. Monthly report */}
+              <View style={[styles.reportCard, isMobile && styles.reportCardMobile]}>
+                <Text style={styles.reportCardKicker}>4</Text>
+                <Text style={styles.reportCardTitle}>Monthly report</Text>
+                <Text style={styles.reportCardDesc}>
+                  Combined PDF snapshot: summary totals, per-child overview, and recent transactions (choose sections in the export dialog).
+                </Text>
+                <View style={styles.reportCardStats}>
+                  <Text style={styles.reportCardStatLine}>Same month as the numbers on the other cards.</Text>
                 </View>
-                <View style={[styles.formCard, isMobile && styles.mobileSurfaceCard]}>
-                  <Text style={styles.formCardTitle}>Available Report Data</Text>
-                  <Text style={styles.helperText}>Download report datasets as CSV files.</Text>
-                  <View style={styles.toggleRowGroup}>
-                    <Pressable style={styles.chipBtn} onPress={() => handleDownloadReport("parent-summary")}><Text style={styles.chipBtnText}>Parent Summary</Text></Pressable>
-                    <Pressable style={styles.chipBtn} onPress={() => handleDownloadReport("children-overview")}><Text style={styles.chipBtnText}>Children</Text></Pressable>
-                    <Pressable style={styles.chipBtn} onPress={() => handleDownloadReport("transactions")}><Text style={styles.chipBtnText}>Transactions</Text></Pressable>
-                    <Pressable style={styles.chipBtn} onPress={() => handleDownloadReport("goals")}><Text style={styles.chipBtnText}>Goals</Text></Pressable>
-                    <Pressable style={styles.chipBtn} onPress={() => handleDownloadReport("chores")}><Text style={styles.chipBtnText}>Chores</Text></Pressable>
-                    <Pressable style={styles.chipBtn} onPress={() => handleDownloadReport("allowances")}><Text style={styles.chipBtnText}>Allowances</Text></Pressable>
-                    <Pressable style={styles.chipBtn} onPress={() => handleDownloadReport("learning")}><Text style={styles.chipBtnText}>Learning</Text></Pressable>
-                    <Pressable style={styles.chipBtn} onPress={() => handleDownloadReport("support")}><Text style={styles.chipBtnText}>Support</Text></Pressable>
-                    <Pressable style={[styles.chipBtn, styles.chipBtnActive]} onPress={() => handleDownloadReport("full-export")}><Text style={[styles.chipBtnText, styles.chipBtnTextActive]}>Full Export</Text></Pressable>
-                  </View>
-                </View>
-              </>
-            )}
+                <Pressable style={[styles.reportCardBtn, styles.reportCardBtnPrimary]} onPress={() => openReportPdfModal("full-export")}>
+                  <Text style={[styles.reportCardBtnText, styles.reportCardBtnTextPrimary]}>Download PDF</Text>
+                </Pressable>
+              </View>
+            </View>
           </View>
         )}
 
@@ -3508,7 +3488,372 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
               </View>
             </View>
           </View>
-        )}      </ScrollView>
+        )}
+      </ScrollView>
+
+      <Modal
+        visible={showTransactionPdfModal}
+        animationType="fade"
+        transparent
+        onRequestClose={() => {
+          setPdfExportChildDropdownOpen(false);
+          setPdfExportTypeDropdownOpen(false);
+          setPdfExportStatusDropdownOpen(false);
+          setPdfExportColumnsDropdownOpen(false);
+          setShowTransactionPdfModal(false);
+        }}
+      >
+        <View style={styles.pdfModalRoot}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => {
+              setPdfExportChildDropdownOpen(false);
+              setPdfExportTypeDropdownOpen(false);
+              setPdfExportStatusDropdownOpen(false);
+              setPdfExportColumnsDropdownOpen(false);
+              setShowTransactionPdfModal(false);
+            }}
+          />
+          <View style={styles.pdfModalCard}>
+            <View style={styles.modalHead}>
+              <Text style={styles.pdfModalTitle}>Export PDF statement</Text>
+              <Pressable
+                style={styles.modalCloseBtn}
+                onPress={() => {
+                  setPdfExportChildDropdownOpen(false);
+                  setPdfExportTypeDropdownOpen(false);
+                  setPdfExportStatusDropdownOpen(false);
+                  setPdfExportColumnsDropdownOpen(false);
+                  setShowTransactionPdfModal(false);
+                }}
+              >
+                <Text style={styles.modalCloseText}>Close</Text>
+              </Pressable>
+            </View>
+            <Text style={styles.pdfModalHelp}>
+              Choose account scope, transaction type, status, and which columns to include. These settings apply only to this PDF.
+            </Text>
+            <ScrollView style={styles.pdfModalScroll} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
+              <View style={styles.dropdownWrap}>
+                <Text style={styles.childSelectorLabel}>Account</Text>
+                <Pressable
+                  style={[styles.pdfSelectTrigger, pdfExportChildDropdownOpen && styles.pdfSelectTriggerOpen]}
+                  onPress={() => {
+                    closePdfExportDropdownsExcept("account");
+                    setPdfExportChildDropdownOpen((prev) => !prev);
+                  }}
+                >
+                  <Text style={styles.pdfSelectTriggerText} numberOfLines={1}>
+                    {pdfExportAccountLabel}
+                  </Text>
+                  <Text style={styles.pdfSelectChevron}>{pdfExportChildDropdownOpen ? "⌃" : "⌄"}</Text>
+                </Pressable>
+                {pdfExportChildDropdownOpen ? (
+                  <View style={styles.pdfSelectMenu}>
+                    <Pressable
+                      style={[styles.pdfSelectOptionRow, pdfExportChildId === "all" && styles.pdfSelectOptionRowActive]}
+                      onPress={() => {
+                        setPdfExportChildId("all");
+                        setPdfExportChildDropdownOpen(false);
+                      }}
+                    >
+                      <Text style={[styles.pdfSelectOptionText, pdfExportChildId === "all" && styles.pdfSelectOptionTextActive]}>All accounts</Text>
+                      {pdfExportChildId === "all" ? <Text style={styles.pdfSelectOptionCheck}>✓</Text> : <View style={styles.pdfSelectOptionCheckSpacer} />}
+                    </Pressable>
+                    <Pressable
+                      style={[styles.pdfSelectOptionRow, pdfExportChildId === "parent_wallet" && styles.pdfSelectOptionRowActive]}
+                      onPress={() => {
+                        setPdfExportChildId("parent_wallet");
+                        setPdfExportChildDropdownOpen(false);
+                      }}
+                    >
+                      <Text style={[styles.pdfSelectOptionText, pdfExportChildId === "parent_wallet" && styles.pdfSelectOptionTextActive]}>Parent wallet</Text>
+                      {pdfExportChildId === "parent_wallet" ? <Text style={styles.pdfSelectOptionCheck}>✓</Text> : <View style={styles.pdfSelectOptionCheckSpacer} />}
+                    </Pressable>
+                    {children.map((child) => (
+                      <Pressable
+                        key={child.id}
+                        style={[styles.pdfSelectOptionRow, pdfExportChildId === child.id && styles.pdfSelectOptionRowActive]}
+                        onPress={() => {
+                          setPdfExportChildId(child.id);
+                          setPdfExportChildDropdownOpen(false);
+                        }}
+                      >
+                        <Text style={[styles.pdfSelectOptionText, pdfExportChildId === child.id && styles.pdfSelectOptionTextActive]}>{child.nickname}</Text>
+                        {pdfExportChildId === child.id ? <Text style={styles.pdfSelectOptionCheck}>✓</Text> : <View style={styles.pdfSelectOptionCheckSpacer} />}
+                      </Pressable>
+                    ))}
+                  </View>
+                ) : null}
+              </View>
+
+              <View style={styles.dropdownWrap}>
+                <Text style={styles.childSelectorLabel}>Type</Text>
+                <Pressable
+                  style={[styles.pdfSelectTrigger, pdfExportTypeDropdownOpen && styles.pdfSelectTriggerOpen]}
+                  onPress={() => {
+                    closePdfExportDropdownsExcept("type");
+                    setPdfExportTypeDropdownOpen((prev) => !prev);
+                  }}
+                >
+                  <Text style={styles.pdfSelectTriggerText} numberOfLines={1}>
+                    {pdfExportTxType === "all" ? "All types" : pdfExportTxType}
+                  </Text>
+                  <Text style={styles.pdfSelectChevron}>{pdfExportTypeDropdownOpen ? "⌃" : "⌄"}</Text>
+                </Pressable>
+                {pdfExportTypeDropdownOpen ? (
+                  <View style={styles.pdfSelectMenu}>
+                    {(["all", "earn", "spend"] as const).map((type) => (
+                      <Pressable
+                        key={type}
+                        style={[styles.pdfSelectOptionRow, pdfExportTxType === type && styles.pdfSelectOptionRowActive]}
+                        onPress={() => {
+                          setPdfExportTxType(type);
+                          setPdfExportTypeDropdownOpen(false);
+                        }}
+                      >
+                        <Text style={[styles.pdfSelectOptionText, pdfExportTxType === type && styles.pdfSelectOptionTextActive]}>
+                          {type === "all" ? "All types" : type}
+                        </Text>
+                        {pdfExportTxType === type ? <Text style={styles.pdfSelectOptionCheck}>✓</Text> : <View style={styles.pdfSelectOptionCheckSpacer} />}
+                      </Pressable>
+                    ))}
+                  </View>
+                ) : null}
+              </View>
+
+              <View style={styles.dropdownWrap}>
+                <Text style={styles.childSelectorLabel}>Status</Text>
+                <Pressable
+                  style={[styles.pdfSelectTrigger, pdfExportStatusDropdownOpen && styles.pdfSelectTriggerOpen]}
+                  onPress={() => {
+                    closePdfExportDropdownsExcept("status");
+                    setPdfExportStatusDropdownOpen((prev) => !prev);
+                  }}
+                >
+                  <Text style={styles.pdfSelectTriggerText} numberOfLines={1}>
+                    {pdfExportTxStatus === "all" ? "All statuses" : pdfExportTxStatus}
+                  </Text>
+                  <Text style={styles.pdfSelectChevron}>{pdfExportStatusDropdownOpen ? "⌃" : "⌄"}</Text>
+                </Pressable>
+                {pdfExportStatusDropdownOpen ? (
+                  <View style={styles.pdfSelectMenu}>
+                    {(["all", "pending", "approved", "rejected"] as const).map((statusItem) => (
+                      <Pressable
+                        key={statusItem}
+                        style={[styles.pdfSelectOptionRow, pdfExportTxStatus === statusItem && styles.pdfSelectOptionRowActive]}
+                        onPress={() => {
+                          setPdfExportTxStatus(statusItem);
+                          setPdfExportStatusDropdownOpen(false);
+                        }}
+                      >
+                        <Text style={[styles.pdfSelectOptionText, pdfExportTxStatus === statusItem && styles.pdfSelectOptionTextActive]}>
+                          {statusItem === "all" ? "All statuses" : statusItem}
+                        </Text>
+                        {pdfExportTxStatus === statusItem ? <Text style={styles.pdfSelectOptionCheck}>✓</Text> : <View style={styles.pdfSelectOptionCheckSpacer} />}
+                      </Pressable>
+                    ))}
+                  </View>
+                ) : null}
+              </View>
+
+              <View style={styles.dropdownWrap}>
+                <Text style={styles.childSelectorLabel}>Columns in the PDF</Text>
+                <Pressable
+                  style={[styles.pdfSelectTrigger, pdfExportColumnsDropdownOpen && styles.pdfSelectTriggerOpen]}
+                  onPress={() => {
+                    closePdfExportDropdownsExcept("columns");
+                    setPdfExportColumnsDropdownOpen((prev) => !prev);
+                  }}
+                >
+                  <Text style={styles.pdfSelectTriggerText} numberOfLines={2}>
+                    {pdfColumnsTriggerLabel(pdfExportIncludeFields)}
+                  </Text>
+                  <Text style={styles.pdfSelectChevron}>{pdfExportColumnsDropdownOpen ? "⌃" : "⌄"}</Text>
+                </Pressable>
+                {pdfExportColumnsDropdownOpen ? (
+                  <View style={styles.pdfSelectMenu}>
+                    {(["date", "child", "type", "status", "description", "amount"] as StatementIncludeField[]).map((field, idx, arr) => (
+                      <Pressable
+                        key={field}
+                        style={[styles.pdfSelectCheckboxRow, idx === arr.length - 1 && styles.pdfSelectCheckboxRowLast]}
+                        onPress={() => togglePdfExportIncludeField(field)}
+                      >
+                        <View style={[styles.pdfSelectCheckboxBox, pdfExportIncludeFields.includes(field) && styles.pdfSelectCheckboxBoxOn]}>
+                          {pdfExportIncludeFields.includes(field) ? <Text style={styles.pdfSelectCheckboxTick}>✓</Text> : null}
+                        </View>
+                        <Text style={styles.pdfSelectCheckboxLabel}>{statementIncludeFieldLabel(field)}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                ) : null}
+              </View>
+
+              <AppButton title="Download PDF" loading={submitting} onPress={handleExportTransactionStatementPdf} />
+              <Pressable
+                style={styles.pdfModalCancel}
+                onPress={() => {
+                  setPdfExportChildDropdownOpen(false);
+                  setPdfExportTypeDropdownOpen(false);
+                  setPdfExportStatusDropdownOpen(false);
+                  setPdfExportColumnsDropdownOpen(false);
+                  setShowTransactionPdfModal(false);
+                }}
+              >
+                <Text style={styles.pdfModalCancelText}>Cancel</Text>
+              </Pressable>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showReportPdfModal}
+        animationType="fade"
+        transparent
+        onRequestClose={() => {
+          setReportPdfTxColumnsOpen(false);
+          setShowReportPdfModal(false);
+          setReportPdfType(null);
+        }}
+      >
+        <View style={styles.pdfModalRoot}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => {
+              setReportPdfTxColumnsOpen(false);
+              setShowReportPdfModal(false);
+              setReportPdfType(null);
+            }}
+          />
+          <View style={styles.pdfModalCard}>
+            <View style={styles.modalHead}>
+              <Text style={styles.pdfModalTitle}>
+                {reportPdfType ? `PDF · ${reportPdfTypeLabel(reportPdfType)}` : "Download report PDF"}
+              </Text>
+              <Pressable
+                style={styles.modalCloseBtn}
+                onPress={() => {
+                  setReportPdfTxColumnsOpen(false);
+                  setShowReportPdfModal(false);
+                  setReportPdfType(null);
+                }}
+              >
+                <Text style={styles.modalCloseText}>Close</Text>
+              </Pressable>
+            </View>
+            <Text style={styles.pdfModalHelp}>
+              Choose the period for this export. Optionally narrow columns (transaction-style reports), fields (spending summary), or sections (monthly snapshot).
+            </Text>
+            <ScrollView style={styles.pdfModalScroll} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
+              <Text style={styles.childSelectorLabel}>Period</Text>
+              <View style={[styles.childrenTopActions, { marginBottom: 14 }]}>
+                <Pressable
+                  style={[styles.childrenTopBtn, reportPdfRange === "this_month" && styles.childrenTopBtnPrimary]}
+                  onPress={() => setReportPdfRange("this_month")}
+                >
+                  <Text style={[styles.childrenTopBtnText, reportPdfRange === "this_month" && styles.childrenTopBtnTextPrimary]}>This month</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.childrenTopBtn, reportPdfRange === "last_30_days" && styles.childrenTopBtnPrimary]}
+                  onPress={() => setReportPdfRange("last_30_days")}
+                >
+                  <Text style={[styles.childrenTopBtnText, reportPdfRange === "last_30_days" && styles.childrenTopBtnTextPrimary]}>Last 30 days</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.childrenTopBtn, reportPdfRange === "all_time" && styles.childrenTopBtnPrimary]}
+                  onPress={() => setReportPdfRange("all_time")}
+                >
+                  <Text style={[styles.childrenTopBtnText, reportPdfRange === "all_time" && styles.childrenTopBtnTextPrimary]}>All time</Text>
+                </Pressable>
+              </View>
+
+              {reportPdfType === "transactions" || reportPdfType === "pending" ? (
+                <View style={styles.dropdownWrap}>
+                  <Text style={styles.childSelectorLabel}>Columns in the PDF</Text>
+                  <Pressable
+                    style={[styles.pdfSelectTrigger, reportPdfTxColumnsOpen && styles.pdfSelectTriggerOpen]}
+                    onPress={() => setReportPdfTxColumnsOpen((prev) => !prev)}
+                  >
+                    <Text style={styles.pdfSelectTriggerText} numberOfLines={2}>
+                      {pdfColumnsTriggerLabel(reportPdfTxInclude)}
+                    </Text>
+                    <Text style={styles.pdfSelectChevron}>{reportPdfTxColumnsOpen ? "⌃" : "⌄"}</Text>
+                  </Pressable>
+                  {reportPdfTxColumnsOpen ? (
+                    <View style={styles.pdfSelectMenu}>
+                      {(["date", "child", "type", "status", "description", "amount"] as StatementIncludeField[]).map((field, idx, arr) => (
+                        <Pressable
+                          key={field}
+                          style={[styles.pdfSelectCheckboxRow, idx === arr.length - 1 && styles.pdfSelectCheckboxRowLast]}
+                          onPress={() => toggleReportPdfTxField(field)}
+                        >
+                          <View style={[styles.pdfSelectCheckboxBox, reportPdfTxInclude.includes(field) && styles.pdfSelectCheckboxBoxOn]}>
+                            {reportPdfTxInclude.includes(field) ? <Text style={styles.pdfSelectCheckboxTick}>✓</Text> : null}
+                          </View>
+                          <Text style={styles.pdfSelectCheckboxLabel}>{statementIncludeFieldLabel(field)}</Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                  ) : null}
+                </View>
+              ) : null}
+
+              {reportPdfType === "children-overview" ? (
+                <View style={styles.dropdownWrap}>
+                  <Text style={styles.childSelectorLabel}>Fields per child</Text>
+                  <View style={styles.pdfSelectMenu}>
+                    {REPORT_CHILD_OVERVIEW_FIELDS.map((field, idx, arr) => (
+                      <Pressable
+                        key={field}
+                        style={[styles.pdfSelectCheckboxRow, idx === arr.length - 1 && styles.pdfSelectCheckboxRowLast]}
+                        onPress={() => toggleReportPdfChildField(field)}
+                      >
+                        <View style={[styles.pdfSelectCheckboxBox, reportPdfChildFields.includes(field) && styles.pdfSelectCheckboxBoxOn]}>
+                          {reportPdfChildFields.includes(field) ? <Text style={styles.pdfSelectCheckboxTick}>✓</Text> : null}
+                        </View>
+                        <Text style={styles.pdfSelectCheckboxLabel}>{REPORT_CHILD_FIELD_LABELS[field]}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
+              ) : null}
+
+              {reportPdfType === "full-export" ? (
+                <View style={styles.dropdownWrap}>
+                  <Text style={styles.childSelectorLabel}>Sections</Text>
+                  <View style={styles.pdfSelectMenu}>
+                    {REPORT_FULL_EXPORT_SECTIONS.map((section, idx, arr) => (
+                      <Pressable
+                        key={section}
+                        style={[styles.pdfSelectCheckboxRow, idx === arr.length - 1 && styles.pdfSelectCheckboxRowLast]}
+                        onPress={() => toggleReportPdfSection(section)}
+                      >
+                        <View style={[styles.pdfSelectCheckboxBox, reportPdfFullSections.includes(section) && styles.pdfSelectCheckboxBoxOn]}>
+                          {reportPdfFullSections.includes(section) ? <Text style={styles.pdfSelectCheckboxTick}>✓</Text> : null}
+                        </View>
+                        <Text style={styles.pdfSelectCheckboxLabel}>{REPORT_SECTION_LABELS[section]}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
+              ) : null}
+
+              <AppButton title="Download PDF" loading={submitting} onPress={handleDownloadReportPdf} />
+              <Pressable
+                style={styles.pdfModalCancel}
+                onPress={() => {
+                  setReportPdfTxColumnsOpen(false);
+                  setShowReportPdfModal(false);
+                  setReportPdfType(null);
+                }}
+              >
+                <Text style={styles.pdfModalCancelText}>Cancel</Text>
+              </Pressable>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
 
       {isMobile ? (
         <View style={styles.mobileBottomNav}>
@@ -5596,6 +5941,268 @@ const styles = StyleSheet.create({
     color: "#3e4d71",
     fontSize: 12,
     fontWeight: "700",
+  },
+  pdfModalRoot: {
+    flex: 1,
+    backgroundColor: "rgba(12, 20, 48, 0.45)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 16,
+  },
+  pdfModalCard: {
+    width: "100%",
+    maxWidth: 480,
+    maxHeight: "90%",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#e6ebfb",
+    backgroundColor: "#ffffff",
+    padding: 16,
+    zIndex: 1,
+  },
+  pdfModalTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#1e2b4d",
+  },
+  pdfModalHelp: {
+    fontSize: 13,
+    color: "#5c6578",
+    marginBottom: 12,
+    lineHeight: 18,
+  },
+  pdfModalScroll: {
+    maxHeight: 420,
+  },
+  pdfModalCancel: {
+    marginTop: 8,
+    alignItems: "center",
+    paddingVertical: 10,
+  },
+  pdfModalCancelText: {
+    color: "#5c6578",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+
+  /** PDF export modal — cleaner selects than legacy dropdowns */
+  pdfSelectTrigger: {
+    minHeight: 50,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: "#c9d1e0",
+    backgroundColor: "#f4f6fb",
+    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  pdfSelectTriggerOpen: {
+    borderColor: TEAL,
+    backgroundColor: "#f0fdfa",
+  },
+  pdfSelectTriggerText: {
+    flex: 1,
+    color: "#1a2244",
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  pdfSelectChevron: {
+    color: "#64748b",
+    fontSize: 16,
+    fontWeight: "600",
+  },
+  pdfSelectMenu: {
+    marginTop: 6,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    backgroundColor: "#ffffff",
+    overflow: "hidden",
+    shadowColor: "#0f172a",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 14,
+    elevation: 6,
+  },
+  pdfSelectOptionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 13,
+    paddingHorizontal: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#e8ecf4",
+    backgroundColor: "#ffffff",
+  },
+  pdfSelectOptionRowActive: {
+    backgroundColor: "#ecfdf9",
+  },
+  pdfSelectOptionText: {
+    flex: 1,
+    color: "#334155",
+    fontSize: 15,
+    fontWeight: "500",
+  },
+  pdfSelectOptionTextActive: {
+    color: "#0f766e",
+    fontWeight: "700",
+  },
+  pdfSelectOptionCheck: {
+    color: TEAL,
+    fontSize: 16,
+    fontWeight: "800",
+    marginLeft: 8,
+  },
+  pdfSelectOptionCheckSpacer: {
+    width: 22,
+    marginLeft: 8,
+  },
+  pdfSelectCheckboxRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#e8ecf4",
+    gap: 12,
+    backgroundColor: "#ffffff",
+  },
+  pdfSelectCheckboxRowLast: {
+    borderBottomWidth: 0,
+  },
+  pdfSelectCheckboxBox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: "#94a3b8",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#ffffff",
+  },
+  pdfSelectCheckboxBoxOn: {
+    borderColor: TEAL,
+    backgroundColor: TEAL,
+  },
+  pdfSelectCheckboxTick: {
+    color: "#ffffff",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  pdfSelectCheckboxLabel: {
+    flex: 1,
+    color: "#334155",
+    fontSize: 15,
+    fontWeight: "500",
+  },
+
+  reportsTopBarMobile: {
+    flexDirection: "column",
+    alignItems: "stretch",
+    gap: 14,
+  },
+  reportsRangeRowMobile: {
+    flexWrap: "wrap",
+    justifyContent: "flex-start",
+    gap: 8,
+  },
+  reportsGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 16,
+    marginTop: 8,
+  },
+  reportCard: {
+    flex: 1,
+    minWidth: 300,
+    maxWidth: 520,
+    padding: 20,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    backgroundColor: "#ffffff",
+    shadowColor: "#0f172a",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+    elevation: 2,
+  },
+  reportCardMobile: {
+    minWidth: "100%",
+    maxWidth: "100%",
+  },
+  reportCardKicker: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: TEAL,
+    letterSpacing: 0.6,
+    marginBottom: 8,
+    textTransform: "uppercase",
+  },
+  reportCardTitle: {
+    fontSize: 17,
+    fontWeight: "700",
+    color: "#0f172a",
+    marginBottom: 8,
+  },
+  reportCardDesc: {
+    fontSize: 13,
+    color: "#64748b",
+    lineHeight: 20,
+    marginBottom: 14,
+  },
+  reportCardStats: {
+    gap: 6,
+    marginBottom: 16,
+  },
+  reportCardStatLine: {
+    fontSize: 13,
+    color: "#334155",
+    fontWeight: "500",
+  },
+  reportCardPendingLine: {
+    fontSize: 12,
+    color: "#475569",
+  },
+  reportCardMuted: {
+    fontSize: 12,
+    color: "#94a3b8",
+    fontStyle: "italic",
+  },
+  reportCardBtn: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 18,
+    paddingVertical: 11,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#cbd5e1",
+    backgroundColor: "#f8fafc",
+  },
+  reportCardBtnPrimary: {
+    backgroundColor: TEAL,
+    borderColor: TEAL,
+  },
+  reportCardBtnText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#334155",
+  },
+  reportCardBtnTextPrimary: {
+    color: "#ffffff",
+  },
+  reportCardActionsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    alignItems: "center",
+  },
+  reportCardBtnFlex: {
+    flex: 1,
+    minWidth: 120,
+    alignSelf: "stretch",
+    alignItems: "center",
   },
 });
 

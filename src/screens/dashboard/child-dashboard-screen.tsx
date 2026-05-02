@@ -15,6 +15,7 @@ import {
   apiCreateChildTransaction,
   apiFundChildGoal,
   apiLogDashboardAction,
+  apiMe,
   apiUpdateChildLearningProgress,
   API_BASE_URL,
   ChildAchievementSummary,
@@ -58,15 +59,25 @@ const tabs: Array<{ key: TabKey; label: string }> = [
 ];
 
 const webNavItems: Array<{ label: string; key: TabKey; icon: string }> = [
-  { label: "Home", key: "home", icon: "H" },
-  { label: "Wallet", key: "wallet", icon: "$" },
-  { label: "Goals", key: "savings", icon: "*" },
-  { label: "Chores", key: "chores", icon: "+" },
-  { label: "Learn & Earn", key: "learn", icon: "A" },
-  { label: "Transactions", key: "transactions", icon: "T" },
-  { label: "Notifications", key: "notifications", icon: "!" },
-  { label: "Profile", key: "settings", icon: "P" },
+  { label: "Home", key: "home", icon: "🏠" },
+  { label: "Wallet", key: "wallet", icon: "👛" },
+  { label: "Goals", key: "savings", icon: "🎯" },
+  { label: "Chores", key: "chores", icon: "✅" },
+  { label: "Learn & Earn", key: "learn", icon: "📚" },
+  { label: "Transactions", key: "transactions", icon: "📋" },
+  { label: "Notifications", key: "notifications", icon: "🔔" },
+  { label: "Profile", key: "settings", icon: "⚙️" },
 ];
+
+function resolveChildProfileImageUrl(url: string | null | undefined): string | null {
+  if (!url || typeof url !== "string") return null;
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed;
+  const base = API_BASE_URL.replace(/\/$/, "");
+  const path = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  return `${base}${path}`;
+}
 
 const formatMoney = (value: number) => `UGX ${value.toLocaleString()}`;
 const walletIllustration1 = require("../../../assets/wallet/Wallet1.jpg");
@@ -168,6 +179,18 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
   const [confirmPassword, setConfirmPassword] = useState("");
   const [displayBalance, setDisplayBalance] = useState(0);
   const [showReward, setShowReward] = useState(false);
+  const [childNickname, setChildNickname] = useState<string | null>(null);
+  const [childFullName, setChildFullName] = useState<string | null>(null);
+  const [childProfileImageUrl, setChildProfileImageUrl] = useState<string | null>(null);
+
+  const childDisplayName = useMemo(
+    () => (childNickname?.trim() || childFullName?.trim() || username).trim(),
+    [childNickname, childFullName, username]
+  );
+  const resolvedSidebarAvatarUri = useMemo(
+    () => resolveChildProfileImageUrl(childProfileImageUrl),
+    [childProfileImageUrl]
+  );
 
   const balanceAnim = useRef(new Animated.Value(0)).current;
   const homeEnterAnim = useRef(new Animated.Value(0)).current;
@@ -307,7 +330,8 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
     setErrorMessage("");
 
     try {
-      const [walletData, txData, savingsData, choresData, allowancesData, lessonsData] = await Promise.all([
+      const [meData, walletData, txData, savingsData, choresData, allowancesData, lessonsData] = await Promise.all([
+        apiMe(),
         apiChildWallet(),
         apiChildTransactions(),
         apiChildSavingsGoals(),
@@ -315,6 +339,10 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
         apiChildAllowances(),
         apiChildLearningLessons().catch(() => ({ lessons: [] as ChildLearningLesson[] })),
       ]);
+
+      setChildNickname(meData.user.nickname ?? null);
+      setChildFullName(meData.user.fullName ?? null);
+      setChildProfileImageUrl(meData.user.profileImageUrl ?? null);
 
       setWallet(walletData.wallet);
       setSavingsGoals(walletData.savingsGoals.length > 0 ? walletData.savingsGoals : savingsData.savingsGoals);
@@ -677,13 +705,27 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
           <View style={styles.webBrandWrap}>
             <Text style={styles.webBrand}>KidsBank</Text>
           </View>
+          <View style={styles.webSidebarProfile}>
+            <View style={styles.webSidebarAvatarOuter}>
+              {resolvedSidebarAvatarUri ? (
+                <Image source={{ uri: resolvedSidebarAvatarUri }} style={styles.webSidebarAvatarImage} resizeMode="cover" />
+              ) : (
+                <View style={styles.webSidebarAvatarPlaceholder}>
+                  <Text style={styles.webSidebarAvatarInitial}>{childDisplayName[0]?.toUpperCase() ?? "?"}</Text>
+                </View>
+              )}
+            </View>
+            <Text style={styles.webSidebarChildName} numberOfLines={2}>
+              {childDisplayName}
+            </Text>
+          </View>
           <View style={styles.webNavList}>
             {webNavItems.map((item) => {
               const active = tab === item.key;
               return (
-                <Pressable key={item.label} style={[styles.webNavItem, active ? styles.webNavItemActive : null]} onPress={() => setTab(item.key)}>
+                <Pressable key={item.key} style={[styles.webNavItem, active ? styles.webNavItemActive : null]} onPress={() => setTab(item.key)}>
                   <View style={[styles.webNavIconPill, active ? styles.webNavIconPillActive : null]}>
-                    <Text style={[styles.webNavIcon, active ? styles.webNavIconActive : null]}>{item.icon}</Text>
+                    <Text style={styles.webNavIconEmoji}>{item.icon}</Text>
                   </View>
                   <Text style={[styles.webNavText, active ? styles.webNavTextActive : null]}>{item.label}</Text>
                 </Pressable>
@@ -711,10 +753,14 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
           <View style={styles.mobileHeader}>
             <View style={styles.mobileProfileRow}>
               <View style={styles.mobileAvatar}>
-                <Text style={styles.mobileAvatarText}>{username[0]?.toUpperCase() ?? "?"}</Text>
+                {resolvedSidebarAvatarUri ? (
+                  <Image source={{ uri: resolvedSidebarAvatarUri }} style={styles.mobileAvatarImage} resizeMode="cover" />
+                ) : (
+                  <Text style={styles.mobileAvatarText}>{childDisplayName[0]?.toUpperCase() ?? "?"}</Text>
+                )}
               </View>
               <View>
-                <Text style={styles.mobileUsername}>Hi, {username}!</Text>
+                <Text style={styles.mobileUsername}>Hi, {childDisplayName}!</Text>
                 <Text style={styles.mobileHello}>Let's learn, save and grow!</Text>
               </View>
             </View>
@@ -728,13 +774,13 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
         ) : (
           <View style={styles.webTopRow}>
             <View>
-              <Text style={styles.webHello}>Hello, {username}!</Text>
+              <Text style={styles.webHello}>Hello, {childDisplayName}!</Text>
               <Text style={styles.webHelloSub}>Let's learn, save and grow together!</Text>
             </View>
             <View style={styles.webTopActions}>
               <View style={styles.webSearch}><Text style={styles.webSearchText}>Search...</Text></View>
               <Pressable style={styles.webProfilePill} onPress={() => setTab("settings")}>
-                <Text style={styles.webProfileName}>{username}</Text>
+                <Text style={styles.webProfileName}>{childDisplayName}</Text>
               </Pressable>
             </View>
           </View>
@@ -2220,6 +2266,12 @@ const styles = StyleSheet.create({
     backgroundColor: "#ecebff",
     justifyContent: "center",
     alignItems: "center",
+    overflow: "hidden",
+  },
+  mobileAvatarImage: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
   },
   mobileAvatarText: {
     color: theme.colors.primary,
@@ -2865,6 +2917,48 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#2a3276",
   },
+  webSidebarProfile: {
+    alignItems: "center",
+    paddingTop: 4,
+    paddingBottom: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: "#2a3276",
+    gap: 10,
+  },
+  webSidebarAvatarOuter: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    borderWidth: 3,
+    borderColor: "#7c8cff",
+    overflow: "hidden",
+    backgroundColor: "#1a2260",
+  },
+  webSidebarAvatarImage: {
+    width: "100%",
+    height: "100%",
+  },
+  webSidebarAvatarPlaceholder: {
+    flex: 1,
+    width: "100%",
+    height: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#2a3485",
+  },
+  webSidebarAvatarInitial: {
+    color: "#eaf0ff",
+    fontSize: 28,
+    fontWeight: "800",
+  },
+  webSidebarChildName: {
+    color: "#eaf0ff",
+    fontSize: 15,
+    fontWeight: "800",
+    textAlign: "center",
+    lineHeight: 20,
+    paddingHorizontal: 4,
+  },
   webBrand: {
     color: "#eaf0ff",
     fontWeight: "800",
@@ -2901,6 +2995,11 @@ const styles = StyleSheet.create({
     color: "#b8c3ff",
     fontSize: 13,
     fontWeight: "900",
+  },
+  webNavIconEmoji: {
+    fontSize: 17,
+    lineHeight: 20,
+    textAlign: "center",
   },
   webNavIconActive: {
     color: "#5f46f1",
