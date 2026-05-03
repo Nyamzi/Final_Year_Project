@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Image, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import * as ImagePicker from "expo-image-picker";
 import {
   AllowanceSummary,
   apiChangePassword,
@@ -19,6 +20,7 @@ import {
   apiLogDashboardAction,
   apiMe,
   apiUpdateChildLearningProgress,
+  apiUpdateChildProfile,
   API_BASE_URL,
   ChildAchievementSummary,
   ChildBudgetSummary,
@@ -83,6 +85,10 @@ function resolveChildProfileImageUrl(url: string | null | undefined): string | n
 }
 
 const formatMoney = (value: number) => `UGX ${value.toLocaleString()}`;
+function addImageCacheBuster(uri: string | null, version: number): string | null {
+  if (!uri || version === 0 || uri.startsWith("data:") || uri.startsWith("file:") || uri.startsWith("blob:")) return uri;
+  return `${uri}${uri.includes("?") ? "&" : "?"}v=${version}`;
+}
 const walletIllustration1 = require("../../../assets/wallet/Wallet1.jpg");
 const walletIllustration2 = require("../../../assets/wallet/Wallet2.jpg");
 const walletIllustration3 = require("../../../assets/wallet/Wallet3.jpg");
@@ -100,6 +106,20 @@ const learnIllustration3 = require("../../../assets/Learn/Learn3.jpg");
 const goalIllustration1 = require("../../../assets/Goal/Goal1.jpg");
 const choreIllustration1 = require("../../../assets/Chore/Chore1.jpg");
 const moneyIllustration1 = require("../../../assets/money/money1.jpg");
+const dailyMoneyTips = [
+  "Save a little first, then decide what to spend. Future you will smile.",
+  "Before buying something, ask: do I need it, or do I just want it today?",
+  "Big goals become easier when you break them into tiny saving steps.",
+  "Earning money feels great, but planning it makes it last longer.",
+  "Keep some money for saving, some for spending, and some for sharing.",
+  "A good budget is like a map: it shows your money where to go.",
+  "If you wait one day before buying, you may discover you do not need it.",
+  "Every coin you save is a small teammate helping your goal get closer.",
+  "Track your money after you spend it so you can make smarter choices next time.",
+  "When you finish a chore, think about saving part of your reward before spending.",
+  "Choose one goal at a time and give it a little money whenever you can.",
+  "Smart money habits are built by small choices repeated often.",
+];
 
 function getTabBackgroundImage(tab: TabKey) {
   if (tab === "home") return bgIllustration1;
@@ -166,6 +186,11 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
   const { width } = useWindowDimensions();
   const isMobile = width < 700;
   const username = email.split("@")[0];
+  const dailyTip = useMemo(() => {
+    const today = new Date();
+    const daySeed = Math.floor(Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()) / 86400000);
+    return dailyMoneyTips[daySeed % dailyMoneyTips.length];
+  }, []);
 
   const [tab, setTab] = useState<TabKey>("home");
   const [wallet, setWallet] = useState<WalletSummary | null>(null);
@@ -204,14 +229,18 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
   const [childNickname, setChildNickname] = useState<string | null>(null);
   const [childFullName, setChildFullName] = useState<string | null>(null);
   const [childProfileImageUrl, setChildProfileImageUrl] = useState<string | null>(null);
+  const [profileImageRefreshKey, setProfileImageRefreshKey] = useState(0);
+  const [childAge, setChildAge] = useState<number | null>(null);
+  const [childAboutMe, setChildAboutMe] = useState<string | null>(null);
+  const [aboutMeDraft, setAboutMeDraft] = useState("");
 
   const childDisplayName = useMemo(
     () => (childNickname?.trim() || childFullName?.trim() || username).trim(),
     [childNickname, childFullName, username]
   );
   const resolvedSidebarAvatarUri = useMemo(
-    () => resolveChildProfileImageUrl(childProfileImageUrl),
-    [childProfileImageUrl]
+    () => addImageCacheBuster(resolveChildProfileImageUrl(childProfileImageUrl), profileImageRefreshKey),
+    [childProfileImageUrl, profileImageRefreshKey]
   );
 
   const balanceAnim = useRef(new Animated.Value(0)).current;
@@ -381,6 +410,13 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
     [assignedLessons]
   );
   const completedLearningCount = learningLessons.filter((lesson) => lesson.progress >= 100).length;
+  const learningStarsEarned = Math.max(
+    completedLearningCount,
+    achievements.filter((achievement) => /learning star/i.test(`${achievement.title} ${achievement.description ?? ""}`)).length
+  );
+  const totalStarsEarned = achievements.reduce((sum, achievement) => sum + Math.max(0, achievement.points), 0);
+  const quizzesPassed = achievements.filter((achievement) => /quiz/i.test(`${achievement.title} ${achievement.description ?? ""}`)).length;
+  const rewardsGotten = achievements.length + completedChores;
   const learningProgressPercent = learningLessons.length
     ? Math.round(learningLessons.reduce((total, lesson) => total + lesson.progress, 0) / learningLessons.length)
     : 0;
@@ -404,6 +440,9 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
       setChildNickname(meData.user.nickname ?? null);
       setChildFullName(meData.user.fullName ?? null);
       setChildProfileImageUrl(meData.user.profileImageUrl ?? null);
+      setChildAge(meData.user.childAge ?? null);
+      setChildAboutMe(meData.user.aboutMe ?? null);
+      setAboutMeDraft(meData.user.aboutMe ?? "");
 
       setWallet(walletData.wallet);
       setSavingsGoals(walletData.savingsGoals.length > 0 ? walletData.savingsGoals : savingsData.savingsGoals);
@@ -500,7 +539,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
   }
 
   function renderBadgesSection() {
-    if (tab === "home" || isLoading) return null;
+    if (tab !== "home" || isLoading) return null;
 
     const unlockedCount = badgeCatalog.filter((badge) => badge.unlocked).length;
 
@@ -821,6 +860,59 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
     void updateLearningProgress(lesson, 100);
   }
 
+  async function handleSaveAboutMe() {
+    setIsSubmitting(true);
+    clearMessages();
+
+    try {
+      const data = await apiUpdateChildProfile({ aboutMe: aboutMeDraft });
+      setChildAboutMe(data.profile.aboutMe);
+      setAboutMeDraft(data.profile.aboutMe ?? "");
+      setStatusMessage(data.message);
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "Could not update About Me.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+  async function handlePickProfileImage() {
+    setIsSubmitting(true);
+    clearMessages();
+
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        setErrorMessage("Please allow photo access so you can choose a profile picture.");
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.75,
+        base64: true,
+      });
+
+      if (result.canceled || !result.assets[0]) return;
+
+      const asset = result.assets[0];
+      setChildProfileImageUrl(asset.uri);
+      setProfileImageRefreshKey(Date.now());
+
+      const profileImageUrl = asset.base64 ? `data:${asset.mimeType ?? "image/jpeg"};base64,${asset.base64}` : asset.uri;
+      const data = await apiUpdateChildProfile({ aboutMe: aboutMeDraft, profileImageUrl });
+      setChildAboutMe(data.profile.aboutMe);
+      setChildProfileImageUrl(data.profile.profileImageUrl ?? asset.uri);
+      setProfileImageRefreshKey(Date.now());
+      setAboutMeDraft(data.profile.aboutMe ?? "");
+      setStatusMessage("Profile picture updated.");
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "Could not update profile picture.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
   async function handleChangePassword() {
     setIsSubmitting(true);
     clearMessages();
@@ -848,7 +940,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
           <View style={styles.webSidebarProfile}>
             <View style={styles.webSidebarAvatarOuter}>
               {resolvedSidebarAvatarUri ? (
-                <Image source={{ uri: resolvedSidebarAvatarUri }} style={styles.webSidebarAvatarImage} resizeMode="cover" />
+                <Image key={resolvedSidebarAvatarUri} source={{ uri: resolvedSidebarAvatarUri }} style={styles.webSidebarAvatarImage} resizeMode="cover" />
               ) : (
                 <View style={styles.webSidebarAvatarPlaceholder}>
                   <Text style={styles.webSidebarAvatarInitial}>{childDisplayName[0]?.toUpperCase() ?? "?"}</Text>
@@ -899,7 +991,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
             <View style={styles.mobileProfileRow}>
               <View style={styles.mobileAvatar}>
                 {resolvedSidebarAvatarUri ? (
-                  <Image source={{ uri: resolvedSidebarAvatarUri }} style={styles.mobileAvatarImage} resizeMode="cover" />
+                  <Image key={resolvedSidebarAvatarUri} source={{ uri: resolvedSidebarAvatarUri }} style={styles.mobileAvatarImage} resizeMode="cover" />
                 ) : (
                   <Text style={styles.mobileAvatarText}>{childDisplayName[0]?.toUpperCase() ?? "?"}</Text>
                 )}
@@ -922,13 +1014,6 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
             <View>
               <Text style={styles.webHello}>Hello, {childDisplayName}!</Text>
               <Text style={styles.webHelloSub}>Let's learn, save and grow together!</Text>
-            </View>
-            <View style={styles.webTopActions}>
-              <View style={styles.webSearch}><Text style={styles.webSearchText}>Search...</Text></View>
-              <Image source={getTabHeroImage(tab)} style={styles.webTopArt} resizeMode="cover" />
-              <Pressable style={styles.webProfilePill} onPress={() => setTab("settings")}>
-                <Text style={styles.webProfileName}>{childDisplayName}</Text>
-              </Pressable>
             </View>
           </View>
         )}
@@ -1120,8 +1205,8 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
 
             <View style={[styles.mobileTipCard, styles.kidCardPink]}>
               <Image source={choreIllustration1} style={styles.mobileTipImage} resizeMode="cover" />
-              <Text style={styles.mobileTipTitle}>Quick Tip</Text>
-              <Text style={styles.mobileTipText}>Saving a little today can help you achieve big dreams tomorrow!</Text>
+              <Text style={styles.mobileTipTitle}>Daily Tip</Text>
+              <Text style={styles.mobileTipText}>{dailyTip}</Text>
             </View>
           </Animated.View>
         ) : null}
@@ -1211,7 +1296,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
               <View style={[styles.webCard, styles.webCardTipFun]}>
                 <Text style={styles.webCardTitle}>Daily Tip</Text>
                 <Image source={walletIllustration2} style={styles.webSideImage} resizeMode="contain" />
-                <Text style={styles.rowMeta}>Saving a little every day helps you achieve big dreams!</Text>
+                <Text style={styles.rowMeta}>{dailyTip}</Text>
               </View>
               <View style={styles.webCard}>
                 <Text style={styles.webCardTitle}>Allowance</Text>
@@ -1231,11 +1316,11 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
             <View style={styles.mobileLearnHeaderRow}>
               <View>
                 <Text style={styles.mobileLearnTitle}>Learn & Earn</Text>
-                <Text style={styles.mobileLearnSubtitle}>Learn smart money skills and earn badges!</Text>
+                <Text style={styles.mobileLearnSubtitle}>Learn smart money skills and earn stars!</Text>
               </View>
               <View style={styles.mobileCoinsPill}>
-                <Text style={styles.mobileCoinsValue}>{Math.max(120, completedChores * 20)}</Text>
-                <Text style={styles.mobileCoinsLabel}>Coins Earned</Text>
+                <Text style={styles.mobileCoinsValue}>{learningStarsEarned}</Text>
+                <Text style={styles.mobileCoinsLabel}>Stars Earned</Text>
               </View>
             </View>
 
@@ -1341,7 +1426,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
 
             <View style={styles.mobileTipCard}>
               <Text style={styles.mobileTipTitle}>Complete lessons and quizzes</Text>
-              <Text style={styles.mobileTipText}>Earn coins and unlock awesome rewards!</Text>
+              <Text style={styles.mobileTipText}>Earn stars and unlock awesome rewards!</Text>
             </View>
           </View>
         ) : null}
@@ -1519,19 +1604,16 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
             <View style={styles.webTopRow}>
               <View>
                 <Text style={styles.webHello}>Learn & Earn</Text>
-                <Text style={styles.webHelloSub}>Learn smart money skills and earn coins!</Text>
-              </View>
-              <View style={styles.webTopActions}>
-                <View style={styles.webSearch}><Text style={styles.webSearchText}>Search lessons...</Text></View>
+                <Text style={styles.webHelloSub}>Learn smart money skills and earn stars!</Text>
               </View>
             </View>
 
             <View style={styles.webGoalsTopGrid}>
               <View style={styles.webGoalsBanner}>
                 <Text style={styles.webGoalsBannerText}>Keep learning, keep growing! Every lesson makes you smarter.</Text>
-              </View>
-              <View style={styles.webGoalsKpiRow}>
-                <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Coins Earned</Text><Text style={styles.webKpiValue}>{Math.max(120, completedChores * 20)}</Text></View>
+                  </View>
+                  <View style={styles.webGoalsKpiRow}>
+                <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Stars Earned</Text><Text style={styles.webKpiValue}>{learningStarsEarned}</Text></View>
                 <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Approved Lessons</Text><Text style={styles.webKpiValue}>{learningLessons.length}</Text></View>
                 <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Lessons Completed</Text><Text style={styles.webKpiValue}>{completedLearningCount}</Text></View>
                 <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Progress</Text><Text style={styles.webKpiValue}>{learningProgressPercent}%</Text></View>
@@ -1601,12 +1683,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                   </View>
                   <Text style={styles.rowMeta}>Saver, Learner, Explorer</Text>
                 </View>
-                <View style={styles.webCard}>
-                  <Text style={styles.webCardTitle}>Top Learners</Text>
-                  <Text style={styles.rowMeta}>1. Noah - 215</Text>
-                  <Text style={styles.rowMeta}>2. Amina (You) - 120</Text>
-                  <Text style={styles.rowMeta}>3. Ethan - 95</Text>
-                </View>
+
               </View>
             </View>
           </View>
@@ -1635,19 +1712,15 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                 <Text style={styles.webHello}>Transactions</Text>
                 <Text style={styles.webHelloSub}>Track your money and celebrate your progress!</Text>
               </View>
-              <View style={styles.webTopActions}>
-                <View style={styles.webSearch}><Text style={styles.webSearchText}>Search transactions...</Text></View>
-              </View>
-            </View>
-
-            <View style={styles.webGoalsKpiRow}>
+                  </View>
+                  <View style={styles.webGoalsKpiRow}>
               <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Money In</Text><Text style={styles.tableCellSuccess}>{formatMoney(totalMoneyIn)}</Text></View>
               <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Money Out</Text><Text style={styles.tableCellPending}>{formatMoney(totalMoneyOut)}</Text></View>
               <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Net Balance</Text><Text style={styles.webKpiValue}>{formatMoney(netBalance)}</Text></View>
               <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Total Transactions</Text><Text style={styles.webKpiValue}>{transactions.length}</Text></View>
             </View>
 
-            <View style={styles.webWalletBottomGrid}>
+            <View style={styles.webWalletTransactionsGrid}>
               <View style={styles.webCard}>
                 <View style={styles.webRowBetween}>
                   <View style={styles.webQuickRow}>
@@ -1682,23 +1755,6 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                 ))}
               </View>
 
-              <View style={styles.webWalletRightCol}>
-                <View style={styles.webCard}>
-                  <Text style={styles.webCardTitle}>Spending vs Saving</Text>
-                  <Text style={styles.rowMeta}>Spent {formatMoney(totalMoneyOut)} ({totalMoneyIn + totalMoneyOut > 0 ? Math.round((totalMoneyOut / (totalMoneyIn + totalMoneyOut)) * 100) : 0}%)</Text>
-                  <Text style={styles.rowMeta}>Saved {formatMoney(totalMoneyIn)} ({totalMoneyIn + totalMoneyOut > 0 ? Math.round((totalMoneyIn / (totalMoneyIn + totalMoneyOut)) * 100) : 0}%)</Text>
-                </View>
-                <View style={styles.webCard}>
-                  <Text style={styles.webCardTitle}>Transaction Breakdown</Text>
-                  <Text style={styles.rowMeta}>Allowance {formatMoney(Math.round(totalMoneyIn * 0.4))}</Text>
-                  <Text style={styles.rowMeta}>Chore Rewards {formatMoney(Math.round(totalMoneyIn * 0.2))}</Text>
-                  <Text style={styles.rowMeta}>Goal Savings {formatMoney(Math.round(totalMoneyOut * 0.5))}</Text>
-                </View>
-                <View style={styles.webCard}>
-                  <Text style={styles.webCardTitle}>Smart Money Tip</Text>
-                  <Text style={styles.rowMeta}>Tracking your money helps you make better choices and reach your goals faster!</Text>
-                </View>
-              </View>
             </View>
           </View>
         ) : null}
@@ -1796,19 +1852,16 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                 <Text style={styles.webHello}>My Goals</Text>
                 <Text style={styles.webHelloSub}>Save today, achieve tomorrow!</Text>
               </View>
-              <View style={styles.webTopActions}>
-                <View style={styles.webSearch}><Text style={styles.webSearchText}>Search goals...</Text></View>
-                <Pressable style={styles.webMiniBtn} onPress={() => setTab("actions")}>
+              <Pressable style={styles.webMiniBtn} onPress={() => setTab("actions")}>
                   <Text style={styles.webMiniBtnText}>Create New Goal</Text>
                 </Pressable>
-              </View>
             </View>
 
             <View style={styles.webGoalsTopGrid}>
               <View style={styles.webGoalsBanner}>
                 <Text style={styles.webGoalsBannerText}>Every coin you save brings you closer to your dreams!</Text>
-              </View>
-              <View style={styles.webGoalsKpiRow}>
+                  </View>
+                  <View style={styles.webGoalsKpiRow}>
                 <View style={styles.webGoalsKpiCard}>
                   <Text style={styles.webKpiLabel}>Total Goals</Text>
                   <Text style={styles.webKpiValue}>{savingsGoals.length}</Text>
@@ -2014,16 +2067,13 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                 <Text style={styles.webHello}>My Chores</Text>
                 <Text style={styles.webHelloSub}>Complete chores, earn rewards, and grow!</Text>
               </View>
-              <View style={styles.webTopActions}>
-                <View style={styles.webSearch}><Text style={styles.webSearchText}>Search chores...</Text></View>
-              </View>
             </View>
 
             <View style={styles.webGoalsTopGrid}>
               <View style={styles.webGoalsBanner}>
                 <Text style={styles.webGoalsBannerText}>You can do it! Every chore helps you earn and learn!</Text>
-              </View>
-              <View style={styles.webGoalsKpiRow}>
+                  </View>
+                  <View style={styles.webGoalsKpiRow}>
                 <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Total Chores</Text><Text style={styles.webKpiValue}>{chores.length}</Text></View>
                 <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Total Earned</Text><Text style={styles.webKpiValue}>{formatMoney(totalChoreRewards)}</Text></View>
                 <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Completed</Text><Text style={styles.webKpiValue}>{completedChores}</Text></View>
@@ -2031,7 +2081,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
               </View>
             </View>
 
-            <View style={styles.webWalletBottomGrid}>
+            <View style={styles.webWalletTransactionsGrid}>
               <View style={styles.webCard}>
                 <Text style={styles.webCardTitle}>To Do ({pendingChores})</Text>
                 <View style={styles.webTxHeader}>
@@ -2166,41 +2216,37 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
           <View style={styles.mobileProfileScreen}>
             <View style={styles.mobileProfileHeader}>
               <View style={styles.mobileProfileAvatar}>
-                <Text style={styles.mobileProfileAvatarText}>{username[0]?.toUpperCase() ?? "?"}</Text>
+                {resolvedSidebarAvatarUri ? (
+                  <Image key={resolvedSidebarAvatarUri} source={{ uri: resolvedSidebarAvatarUri }} style={styles.mobileProfileAvatarImage} resizeMode="cover" />
+                ) : (
+                  <Text style={styles.mobileProfileAvatarText}>{childDisplayName[0]?.toUpperCase() ?? "?"}</Text>
+                )}
               </View>
               <View style={styles.mobileProfileMeta}>
-                <Text style={styles.mobileProfileName}>{username}</Text>
-                <Text style={styles.mobileProfileLevel}>Level 4 Explorer</Text>
-                <Text style={styles.mobileProfileXp}>320 / 500 XP</Text>
+                <Text style={styles.mobileProfileName}>{childDisplayName}</Text>
+                <Text style={styles.mobileProfileLevel}>{childAge ? `${childAge} years old` : "Kids Account"}</Text>
+                <Text style={styles.mobileProfileXp}>{totalStarsEarned} stars earned</Text>
                 <View style={styles.mobileProfileXpTrack}>
-                  <View style={[styles.mobileProfileXpFill, { width: "64%" }]} />
+                  <View style={[styles.mobileProfileXpFill, { width: `${Math.min(100, totalStarsEarned * 12)}%` }]} />
                 </View>
+                <Pressable style={styles.profilePhotoButton} onPress={handlePickProfileImage} disabled={isSubmitting}>
+                  <Text style={styles.profilePhotoButtonText}>Change Profile Picture</Text>
+                </Pressable>
               </View>
             </View>
 
-            <View style={styles.mobileProfileMenu}>
-              {profileMenuItems.map((item, index) => (
-                <Pressable
-                  key={item}
-                  onPress={() => handleProfileMenuPress(item)}
-                  style={[styles.mobileProfileMenuRow, index === profileMenuItems.length - 1 ? styles.mobileRecentRowLast : null]}
-                >
-                  <Text style={styles.mobileProfileMenuText}>{item}</Text>
-                  <View style={styles.mobileProfileMenuRight}>
-                    {item === "Notifications" ? (
-                      <View style={styles.mobileProfileNotifBadge}>
-                        <Text style={styles.mobileProfileNotifBadgeText}>3</Text>
-                      </View>
-                    ) : null}
-                    <Text style={styles.mobileProfileMenuArrow}>{"\u203A"}</Text>
-                  </View>
-                </Pressable>
-              ))}
+            <View style={styles.profileStatsGrid}>
+              <View style={styles.profileStatTile}><Text style={styles.webKpiValue}>{totalStarsEarned}</Text><Text style={styles.rowMeta}>Stars</Text></View>
+              <View style={styles.profileStatTile}><Text style={styles.webKpiValue}>{quizzesPassed}</Text><Text style={styles.rowMeta}>Quizzes Passed</Text></View>
+              <View style={styles.profileStatTile}><Text style={styles.webKpiValue}>{rewardsGotten}</Text><Text style={styles.rowMeta}>Rewards</Text></View>
+              <View style={styles.profileStatTile}><Text style={styles.webKpiValue}>{completedLearningCount}</Text><Text style={styles.rowMeta}>Lessons</Text></View>
             </View>
 
-            <View style={styles.mobileProfileInviteCard}>
-              <Text style={styles.mobileProfileInviteTitle}>Invite a Friend</Text>
-              <Text style={styles.mobileProfileInviteText}>Earn rewards when your friends join!</Text>
+            <View style={styles.softCard}>
+              <Text style={styles.cardTitle}>About Me</Text>
+              <Text style={styles.rowMeta}>{childAboutMe?.trim() || "Write something fun about yourself."}</Text>
+              <AppInput label="My About Me" value={aboutMeDraft} onChangeText={setAboutMeDraft} multiline numberOfLines={4} placeholder="I like saving for toys, learning money skills..." />
+              <AppButton title="Save About Me" loading={isSubmitting} onPress={handleSaveAboutMe} />
             </View>
 
             <Pressable style={styles.mobileProfileLogoutBtn} onPress={onLogout}>
@@ -2214,10 +2260,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
             <View style={styles.webTopRow}>
               <View>
                 <Text style={styles.webHello}>My Profile</Text>
-                <Text style={styles.webHelloSub}>Manage your profile and see your achievements!</Text>
-              </View>
-              <View style={styles.webTopActions}>
-                <View style={styles.webSearch}><Text style={styles.webSearchText}>Search anything...</Text></View>
+                <Text style={styles.webHelloSub}>About {childDisplayName}, achievements, and rewards.</Text>
               </View>
             </View>
 
@@ -2226,31 +2269,36 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                 <View style={styles.webCard}>
                   <View style={styles.webRowBetween}>
                     <View>
-                      <Text style={styles.webHello}>{username}</Text>
-                      <Text style={styles.webHelloSub}>Level 4 Explorer</Text>
-                      <Text style={styles.webHelloSub}>320 / 500 XP</Text>
+                      <Text style={styles.webHello}>{childDisplayName}</Text>
+                      <Text style={styles.webHelloSub}>{childAge ? `${childAge} years old` : "Kids Account"}</Text>
+                      <Text style={styles.webHelloSub}>{email}</Text>
                     </View>
-                    <Text style={styles.mobileSectionLink}>Edit</Text>
+                    <View style={styles.profileAvatarFrame}>
+                      {resolvedSidebarAvatarUri ? (
+                        <Image key={resolvedSidebarAvatarUri} source={{ uri: resolvedSidebarAvatarUri }} style={styles.profileAvatarImage} resizeMode="cover" />
+                      ) : (
+                        <View style={styles.profileAvatarPlaceholder}>
+                          <Text style={styles.webSidebarAvatarInitial}>{childDisplayName[0]?.toUpperCase() ?? "?"}</Text>
+                        </View>
+                      )}
+                    </View>
                   </View>
+                  <Pressable style={styles.profilePhotoButton} onPress={handlePickProfileImage} disabled={isSubmitting}>
+                    <Text style={styles.profilePhotoButtonText}>Change Profile Picture</Text>
+                  </Pressable>
                   <View style={styles.webGoalsKpiRow}>
-                    <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Age</Text><Text style={styles.webKpiValue}>9</Text></View>
-                    <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Member Since</Text><Text style={styles.webKpiValue}>Jan 15, 2025</Text></View>
-                    <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Favorite Color</Text><Text style={styles.webKpiValue}>Purple</Text></View>
-                    <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Account Type</Text><Text style={styles.webKpiValue}>Kids Account</Text></View>
+                    <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Stars Earned</Text><Text style={styles.webKpiValue}>{totalStarsEarned}</Text></View>
+                    <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Quizzes Passed</Text><Text style={styles.webKpiValue}>{quizzesPassed}</Text></View>
+                    <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Rewards Gotten</Text><Text style={styles.webKpiValue}>{rewardsGotten}</Text></View>
+                    <View style={styles.webGoalsKpiCard}><Text style={styles.webKpiLabel}>Lessons Completed</Text><Text style={styles.webKpiValue}>{completedLearningCount}</Text></View>
                   </View>
                 </View>
 
                 <View style={styles.webCard}>
-                  <Text style={styles.webCardTitle}>Account & Settings</Text>
-                  {["App Lock (PIN)", "Change PIN", "Notification Preferences", "Privacy", "Payment & Security"].map((item) => (
-                    <View key={item} style={styles.webProfileRow}>
-                      <View>
-                        <Text style={styles.rowMain}>{item}</Text>
-                        <Text style={styles.rowMeta}>Manage this setting</Text>
-                      </View>
-                      <Text style={styles.webProfileArrow}>{"\u203A"}</Text>
-                    </View>
-                  ))}
+                  <Text style={styles.webCardTitle}>About Me</Text>
+                  <Text style={styles.rowMeta}>{childAboutMe?.trim() || "Write something fun about yourself so your profile feels like you."}</Text>
+                  <AppInput label="My About Me" value={aboutMeDraft} onChangeText={setAboutMeDraft} multiline numberOfLines={5} placeholder="I like learning, saving, helping at home..." />
+                  <AppButton title="Save About Me" loading={isSubmitting} onPress={handleSaveAboutMe} />
                 </View>
               </View>
 
@@ -2258,39 +2306,38 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                 <View style={styles.webCard}>
                   <View style={styles.webRowBetween}>
                     <Text style={styles.webCardTitle}>My Badges</Text>
-                    <Text style={styles.mobileSectionLink}>View All</Text>
+                    <Text style={styles.mobileSectionLink}>{achievements.length} earned</Text>
                   </View>
-                  <Text style={styles.rowMeta}>Saver | Learner | Explorer | Goal Getter | Money Master</Text>
+                  <View style={styles.badgesRow}>
+                    {badgeCatalog.map((badge) => (
+                      <View key={badge.key} style={[styles.badgeTile, badge.unlocked ? styles.badgeTileUnlocked : styles.badgeTileLocked]}>
+                        <Text style={[styles.badgeIcon, badge.unlocked ? null : styles.badgeIconLocked]}>{badge.icon}</Text>
+                        <View style={styles.badgeTextWrap}>
+                          <Text style={styles.badgeTitleText}>{badge.title}</Text>
+                          <Text style={styles.badgeDescription}>{badge.unlocked ? "Unlocked" : badge.description}</Text>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
                 </View>
 
                 <View style={styles.webCard}>
-                  <View style={styles.webRowBetween}>
-                    <Text style={styles.webCardTitle}>My Stats</Text>
-                    <Text style={styles.rowMeta}>This Month</Text>
-                  </View>
-                  <View style={styles.webProfileStatCard}><Text style={styles.webKpiValue}>{formatMoney(walletEarned)}</Text><Text style={styles.rowMeta}>Total Earned</Text></View>
-                  <View style={styles.webProfileStatCard}><Text style={styles.webKpiValue}>{formatMoney(totalSavings)}</Text><Text style={styles.rowMeta}>Total Saved</Text></View>
-                  <View style={styles.webProfileStatCard}><Text style={styles.webKpiValue}>{completedLearningCount}</Text><Text style={styles.rowMeta}>Lessons Completed</Text></View>
-                  <View style={styles.webProfileStatCard}><Text style={styles.webKpiValue}>{completedGoalsCount}</Text><Text style={styles.rowMeta}>Goals Completed</Text></View>
+                  <Text style={styles.webCardTitle}>Rewards Gotten</Text>
+                  <View style={styles.webProfileStatCard}><Text style={styles.webKpiValue}>{formatMoney(totalChoreRewards)}</Text><Text style={styles.rowMeta}>Chore reward money</Text></View>
+                  <View style={styles.webProfileStatCard}><Text style={styles.webKpiValue}>{achievements.length}</Text><Text style={styles.rowMeta}>Badges and stars</Text></View>
+                  <View style={styles.webProfileStatCard}><Text style={styles.webKpiValue}>{completedGoalsCount}</Text><Text style={styles.rowMeta}>Goals reached</Text></View>
                 </View>
               </View>
 
               <View style={styles.webRightCol}>
                 <View style={styles.webCard}>
-                  <Text style={styles.webCardTitle}>About Me</Text>
-                  <Text style={styles.rowMeta}>I love reading books</Text>
-                  <Text style={styles.rowMeta}>I want to be a doctor one day</Text>
-                  <Text style={styles.rowMeta}>I enjoy saving money and learning new things</Text>
+                  <Text style={styles.webCardTitle}>Learning Progress</Text>
+                  <Text style={styles.webAllowanceValue}>{learningProgressPercent}%</Text>
+                  <Text style={styles.rowMeta}>overall learning progress</Text>
                 </View>
                 <View style={styles.webCard}>
-                  <Text style={styles.webCardTitle}>Parents & Help</Text>
-                  <Text style={styles.rowMeta}>Help Center</Text>
-                  <Text style={styles.rowMeta}>How KidsBank Works</Text>
-                  <Text style={styles.rowMeta}>Contact Support</Text>
-                </View>
-                <View style={styles.webCard}>
-                  <Text style={styles.webCardTitle}>Keep up the great work, {username}!</Text>
-                  <Text style={styles.rowMeta}>You're learning, earning, and growing every day.</Text>
+                  <Text style={styles.webCardTitle}>Keep up the great work, {childDisplayName}!</Text>
+                  <Text style={styles.rowMeta}>You are learning, earning stars, and growing every day.</Text>
                 </View>
               </View>
             </View>
@@ -2426,9 +2473,10 @@ const styles = StyleSheet.create({
   },
   contentCard: {
     flex: 1,
-    borderRadius: 16,
-    borderWidth: 0,
-    backgroundColor: "#f7f9ff",
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#dbeafe",
+    backgroundColor: "#eef9ff",
   },
   contentCardInner: {
     padding: 14,
@@ -2437,6 +2485,7 @@ const styles = StyleSheet.create({
   },
   contentCardMobile: {
     borderRadius: 14,
+    backgroundColor: "#fff7d6",
   },
   contentCardInnerMobile: {
     padding: 12,
@@ -2560,7 +2609,12 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   sectionWrap: {
-    gap: 10,
+    gap: 12,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: "rgba(255, 214, 102, 0.7)",
+    backgroundColor: "rgba(255, 255, 255, 0.72)",
+    padding: 10,
   },
   mobileBalanceCard: {
     borderRadius: 16,
@@ -2668,9 +2722,9 @@ const styles = StyleSheet.create({
     color: theme.colors.danger,
   },
   mobileGoalCard: {
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#e6e8f2",
+    borderRadius: 18,
+    borderWidth: 2,
+    borderColor: "#c4b5fd",
     backgroundColor: "#f4f3ff",
     padding: 12,
     flexDirection: "row",
@@ -2727,10 +2781,10 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   mobileGoalEmptyCard: {
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#e4e8f4",
-    backgroundColor: "#ffffff",
+    borderRadius: 18,
+    borderWidth: 2,
+    borderColor: "#fde68a",
+    backgroundColor: "#fff7ed",
     padding: 14,
     gap: 8,
   },
@@ -2779,10 +2833,10 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   mobileCoinsPill: {
-    borderRadius: 12,
-    backgroundColor: "#fff8e6",
-    borderWidth: 1,
-    borderColor: "#f5dfb1",
+    borderRadius: 16,
+    backgroundColor: "#fff1b8",
+    borderWidth: 2,
+    borderColor: "#facc15",
     paddingHorizontal: 10,
     paddingVertical: 8,
     alignItems: "center",
@@ -2799,11 +2853,11 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   mobileLearnHero: {
-    borderRadius: 14,
-    backgroundColor: "#f3f2ff",
-    borderWidth: 1,
-    borderColor: "#e6e8f4",
-    padding: 14,
+    borderRadius: 20,
+    backgroundColor: "#e0f7ff",
+    borderWidth: 2,
+    borderColor: "#7dd3fc",
+    padding: 16,
   },
   mobileLearnHeroTitle: {
     color: "#1e2340",
@@ -3013,6 +3067,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  mobileProfileAvatarImage: {
+    width: 66,
+    height: 66,
+    borderRadius: 33,
+  },
   mobileProfileAvatarText: {
     color: "#fff",
     fontSize: 26,
@@ -3050,7 +3109,57 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: "#7048ff",
   },
-  mobileProfileMenu: {
+  profileAvatarFrame: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    borderWidth: 3,
+    borderColor: "#ffcf4a",
+    overflow: "hidden",
+    backgroundColor: "#ffdc5e",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  profileAvatarImage: {
+    width: "100%",
+    height: "100%",
+  },
+  profileAvatarPlaceholder: {
+    width: "100%",
+    height: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#ffdc5e",
+  },
+  profilePhotoButton: {
+    alignSelf: "flex-start",
+    borderRadius: 999,
+    backgroundColor: "#ffcf4a",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    marginTop: 8,
+  },
+  profilePhotoButtonText: {
+    color: "#16205f",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  profileStatsGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  profileStatTile: {
+    flexGrow: 1,
+    flexBasis: "46%",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#2a2f66",
+    backgroundColor: "#ffffff",
+    padding: 12,
+    gap: 4,
+  },  mobileProfileMenu: {
     borderRadius: 12,
     borderWidth: 1,
     borderColor: "#1d2255",
@@ -3460,10 +3569,10 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   webCard: {
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#e6e9f5",
-    backgroundColor: "#fff",
+    borderRadius: 18,
+    borderWidth: 2,
+    borderColor: "#ffd6a5",
+    backgroundColor: "rgba(255, 253, 247, 0.96)",
     padding: 14,
     gap: 10,
     zIndex: 2,
@@ -3584,9 +3693,12 @@ const styles = StyleSheet.create({
   webTxHeader: {
     width: "100%",
     flexDirection: "row",
-    borderBottomWidth: 1,
-    borderBottomColor: "#eef1f8",
-    paddingBottom: 6,
+    borderRadius: 12,
+    backgroundColor: "#e0f2fe",
+    borderWidth: 1,
+    borderColor: "#bae6fd",
+    paddingHorizontal: 8,
+    paddingVertical: 7,
   },
   webTxHeadCell: {
     flex: 1,
@@ -3597,8 +3709,11 @@ const styles = StyleSheet.create({
   webTxRow: {
     width: "100%",
     flexDirection: "row",
-    borderBottomWidth: 1,
-    borderBottomColor: "#f2f4fb",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#fef3c7",
+    backgroundColor: "rgba(255, 255, 255, 0.82)",
+    paddingHorizontal: 8,
     paddingVertical: 8,
   },
   webTxCell: {
@@ -3627,11 +3742,11 @@ const styles = StyleSheet.create({
   },
   webGoalsBanner: {
     flex: 1.2,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#e6e9f5",
-    backgroundColor: "#f4f2ff",
-    padding: 14,
+    borderRadius: 20,
+    borderWidth: 2,
+    borderColor: "#ffb3d1",
+    backgroundColor: "#fff0f7",
+    padding: 16,
     justifyContent: "center",
   },
   webGoalsBannerText: {
@@ -3648,10 +3763,10 @@ const styles = StyleSheet.create({
   },
   webGoalsKpiCard: {
     flex: 1,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#e6e9f5",
-    backgroundColor: "#fff",
+    borderRadius: 16,
+    borderWidth: 2,
+    borderColor: "#99f6e4",
+    backgroundColor: "#ecfeff",
     padding: 12,
     justifyContent: "center",
     gap: 4,
@@ -3693,10 +3808,10 @@ const styles = StyleSheet.create({
   },
   webGoalTile: {
     width: 170,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#eaedf7",
-    backgroundColor: "#fff",
+    borderRadius: 16,
+    borderWidth: 2,
+    borderColor: "#bbf7d0",
+    backgroundColor: "#f0fdf4",
     padding: 10,
     gap: 6,
   },
@@ -3795,10 +3910,10 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   softCard: {
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: "#f8f9ff",
+    borderRadius: 18,
+    borderWidth: 2,
+    borderColor: "#ffd166",
+    backgroundColor: "#fff7cc",
     padding: 12,
     gap: 10,
   },
@@ -3812,10 +3927,10 @@ const styles = StyleSheet.create({
     fontSize: 18,
   },
   rowItem: {
-    borderRadius: 10,
+    borderRadius: 14,
     backgroundColor: "#ffffff",
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderWidth: 2,
+    borderColor: "#bfdbfe",
     paddingHorizontal: 10,
     paddingVertical: 8,
     flexDirection: "row",

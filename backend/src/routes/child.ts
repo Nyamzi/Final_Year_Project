@@ -1,3 +1,6 @@
+import fs from "fs";
+import path from "path";
+import { randomUUID } from "crypto";
 import { Router } from "express";
 import { z } from "zod";
 import { BudgetPeriod, ChoreStatus, GoalStatus, Prisma, TransactionStatus, TransactionType } from "@prisma/client";
@@ -41,6 +44,50 @@ const budgetSchema = z.object({
 const learningProgressSchema = z.object({
   progressPercent: z.number().min(0).max(100),
 });
+
+const childProfileSchema = z.object({
+  aboutMe: z.string().max(500).optional(),
+  profileImageUrl: z.string().min(1).optional(),
+});
+
+function resolvePublicApiBaseUrl(req: AuthenticatedRequest): string {
+  const envBase = process.env.PUBLIC_API_BASE_URL?.trim().replace(/\/$/, "");
+  if (envBase) return envBase;
+  const host = req.get("x-forwarded-host") ?? req.get("host") ?? "localhost:3000";
+  const proto = req.get("x-forwarded-proto") ?? req.protocol ?? "http";
+  return `${proto}://${host}`;
+}
+
+function persistDataUriProfileImage(req: AuthenticatedRequest, dataUri: string): string {
+  const base64Marker = ";base64,";
+  const markerIndex = dataUri.indexOf(base64Marker);
+  if (markerIndex === -1 || !dataUri.startsWith("data:")) {
+    throw new Error("invalid_image");
+  }
+
+  const mimePart = dataUri.slice(5, markerIndex);
+  const base64Data = dataUri.slice(markerIndex + base64Marker.length);
+  const buffer = Buffer.from(base64Data, "base64");
+  if (buffer.length > 8 * 1024 * 1024) {
+    throw new Error("image_too_large");
+  }
+
+  const ext = mimePart.includes("png")
+    ? "png"
+    : mimePart.includes("webp")
+      ? "webp"
+      : mimePart.includes("gif")
+        ? "gif"
+        : "jpeg";
+
+  const uploadDir = path.join(process.cwd(), "uploads", "profiles");
+  fs.mkdirSync(uploadDir, { recursive: true });
+  const fileName = `${randomUUID()}.${ext}`;
+  const targetPath = path.join(uploadDir, fileName);
+  fs.writeFileSync(targetPath, buffer);
+
+  return `${resolvePublicApiBaseUrl(req)}/uploads/profiles/${fileName}`;
+}
 
 async function awardGoalCompletionStar(
   tx: Prisma.TransactionClient,
@@ -217,8 +264,66 @@ async function processDueAllowancesForChild(childUserId: string) {
   });
 }
 
-// â”€â”€â”€ Wallet â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Wallet
 
+router.patch("/profile", authMiddleware, requireRole("child"), async (req: AuthenticatedRequest, res) => {
+  try {
+    const parsed = childProfileSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid child profile payload" });
+    }
+
+    const child = await prisma.childProfile.findUnique({
+      where: { childUserId: req.user!.userId },
+      select: { id: true, childUserId: true },
+    });
+
+    if (!child) {
+      return res.status(404).json({ error: "Child profile not found" });
+    }
+
+    const aboutMe = parsed.data.aboutMe?.trim() || null;
+    let profileImageUrl = parsed.data.profileImageUrl?.trim();
+
+    if (profileImageUrl?.startsWith("data:")) {
+      try {
+        profileImageUrl = persistDataUriProfileImage(req, profileImageUrl);
+      } catch (err) {
+        const code = err instanceof Error ? err.message : "";
+        if (code === "image_too_large") {
+          return res.status(400).json({ error: "Profile image is too large. Choose a smaller photo." });
+        }
+        return res.status(400).json({ error: "Invalid profile image" });
+      }
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const profile = await tx.childProfile.update({
+        where: { id: child.id },
+        data: { aboutMe },
+        select: { nickname: true, age: true, aboutMe: true },
+      });
+
+      const user = profileImageUrl
+        ? await tx.user.update({
+            where: { id: child.childUserId },
+            data: { profileImageUrl },
+            select: { profileImageUrl: true },
+          })
+        : await tx.user.findUnique({
+            where: { id: child.childUserId },
+            select: { profileImageUrl: true },
+          });
+
+      return { ...profile, profileImageUrl: user?.profileImageUrl ?? null };
+    });
+
+    res.json({ message: "Profile updated.", profile: updated });
+  } catch (error) {
+    console.error("Update child profile error:", error);
+    res.status(500).json({ error: "Failed to update child profile" });
+  }
+});
 router.get("/wallet", authMiddleware, requireRole("child"), async (req: AuthenticatedRequest, res) => {
   try {
     await processDueAllowancesForChild(req.user!.userId);
@@ -379,7 +484,7 @@ router.delete("/budget", authMiddleware, requireRole("child"), async (req: Authe
     res.status(500).json({ error: "Failed to clear budget" });
   }
 });
-// â”€â”€â”€ Transactions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Transactions
 
 router.get("/transactions", authMiddleware, requireRole("child"), async (req: AuthenticatedRequest, res) => {
   try {
@@ -513,7 +618,7 @@ router.post("/transactions", authMiddleware, requireRole("child"), async (req: A
   }
 });
 
-// â”€â”€â”€ Savings Goals â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Savings Goals
 
 router.get("/savings-goals", authMiddleware, requireRole("child"), async (req: AuthenticatedRequest, res) => {
   try {
@@ -668,7 +773,7 @@ router.post("/savings-goals/fund", authMiddleware, requireRole("child"), async (
   }
 });
 
-// â”€â”€â”€ Chores â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Chores
 
 router.post("/withdrawals", authMiddleware, requireRole("child"), async (req: AuthenticatedRequest, res) => {
   try {
@@ -804,7 +909,7 @@ router.get("/chores", authMiddleware, requireRole("child"), async (req: Authenti
   }
 });
 
-// POST /api/child/chores/:id/complete
+// Chores
 router.post("/chores/:id/complete", authMiddleware, requireRole("child"), async (req: AuthenticatedRequest, res) => {
   try {
     const child = await prisma.childProfile.findUnique({
@@ -885,7 +990,7 @@ router.post("/chores/:id/complete", authMiddleware, requireRole("child"), async 
   }
 });
 
-// â”€â”€â”€ Allowances â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Allowances
 
 router.get("/allowances", authMiddleware, requireRole("child"), async (req: AuthenticatedRequest, res) => {
   try {

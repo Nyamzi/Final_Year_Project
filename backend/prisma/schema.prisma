@@ -75,6 +75,7 @@ model ChildProfile {
   id                 String                  @id @default(cuid())
   nickname           String
   age                Int
+  aboutMe            String?                 @db.Text
   parentId           String                  @db.Uuid
   childUserId        String                  @unique @db.Uuid
   createdAt          DateTime                @default(now())

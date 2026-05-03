@@ -1,4 +1,4 @@
-﻿import { Platform } from "react-native";
+import { Platform } from "react-native";
 import * as WebBrowser from "expo-web-browser";
 import { supabase } from "./supabase";
 
@@ -43,8 +43,10 @@ export type AuthMeResponse = {
     nin: string | null;
     sex: "male" | "female" | null;
     profileImageUrl: string | null;
-    /** Set for child accounts â€” display name chosen by parent */
+    /** Set for child accounts - display name chosen by parent */
     nickname?: string | null;
+    childAge?: number | null;
+    aboutMe?: string | null;
   };
 };
 
@@ -201,6 +203,7 @@ export type ParentProfile = {
 export type AdminAnalytics = {
   totalParents: number;
   totalChildren: number;
+  totalAdmins?: number;
   totalTransactions: number;
   pendingTransactions: number;
   approvedTransactions: number;
@@ -208,6 +211,59 @@ export type AdminAnalytics = {
   totalQuizzes: number;
   earnCount: number;
   spendCount: number;
+  usersByRole?: Array<{ role: string; count: number }>;
+  depositsVsWithdrawals?: {
+    deposits: number;
+    withdrawals: number;
+    earned: number;
+  };
+  monthlyTransactions?: Array<{
+    month: string;
+    transactions: number;
+    deposits: number;
+    withdrawals: number;
+  }>;
+  pendingWithdrawals?: {
+    count: number;
+    totalAmount: number;
+    items: Array<{
+      id: string;
+      childName: string;
+      parentName: string;
+      amount: number;
+      description: string | null;
+      createdAt: string;
+    }>;
+  };
+  learningProgress?: {
+    assigned: number;
+    completed: number;
+    inProgress: number;
+    averageProgress: number;
+    byChild: Array<{ childName: string; lessonTitle: string; progressPercent: number }>;
+  };
+  quizPerformance?: {
+    totalQuizzes: number;
+    published: number;
+    drafts: number;
+    completionRate: number;
+    monthlyPublished: Array<{ month: string; count: number }>;
+  };
+  activeUsers?: {
+    activeUsersCount: number;
+    daily: Array<{ day: string; count: number }>;
+    byRole: Array<{ role: string; count: number }>;
+  };
+  savingsGoalsProgress?: Array<{
+    id: string;
+    title: string;
+    childName: string;
+    currentAmount: number;
+    targetAmount: number;
+    progressPercent: number;
+    status: string;
+  }>;
+  activeSavingsGoals?: number;
 };
 
 export type AdminLesson = {
@@ -694,6 +750,13 @@ export function apiSaveChildBudget(input: {
 export function apiClearChildBudget() {
   return request<{ message: string }>("/api/child/budget", {
     method: "DELETE",
+  });
+}
+
+export function apiUpdateChildProfile(input: { aboutMe: string; profileImageUrl?: string }) {
+  return request<{ message: string; profile: { nickname: string; age: number; aboutMe: string | null; profileImageUrl: string | null } }>("/api/child/profile", {
+    method: "PATCH",
+    body: JSON.stringify(input),
   });
 }
 

@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { prisma } from "../db";
 import { authMiddleware, AuthenticatedRequest, requireRole } from "../middleware/auth";
-import { Role, TransactionStatus, TransactionType } from "@prisma/client";
+import { GoalStatus, Role, TransactionStatus, TransactionType } from "@prisma/client";
 import { z } from "zod";
 import fs from "fs";
 import path from "path";
@@ -148,12 +148,55 @@ function getCategoryFromTransaction(tx: { type: TransactionType; description: st
   return "Spend";
 }
 
+function getRecentMonthBuckets(count: number) {
+  const now = new Date();
+  return Array.from({ length: count }).map((_, idx) => {
+    const date = new Date(now.getFullYear(), now.getMonth() - (count - 1 - idx), 1);
+    return {
+      label: date.toLocaleString("en", { month: "short" }),
+      month: date.getMonth(),
+      year: date.getFullYear(),
+    };
+  });
+}
+
+function getRecentDayBuckets(count: number) {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return Array.from({ length: count }).map((_, idx) => {
+    const date = new Date(today);
+    date.setDate(today.getDate() - (count - 1 - idx));
+    return {
+      label: date.toLocaleString("en", { weekday: "short" }),
+      day: date.getDate(),
+      month: date.getMonth(),
+      year: date.getFullYear(),
+    };
+  });
+}
+
+function sameMonth(date: Date, bucket: { month: number; year: number }) {
+  return date.getMonth() === bucket.month && date.getFullYear() === bucket.year;
+}
+
+function sameDay(date: Date, bucket: { day: number; month: number; year: number }) {
+  return date.getDate() === bucket.day && date.getMonth() === bucket.month && date.getFullYear() === bucket.year;
+}
 // GET /api/admin/analytics
-router.get("/analytics", authMiddleware, requireRole("admin"), async (req: AuthenticatedRequest, res) => {
+router.get("/analytics", authMiddleware, requireRole("admin"), async (_req: AuthenticatedRequest, res) => {
   try {
+    const monthBuckets = getRecentMonthBuckets(6);
+    const dayBuckets = getRecentDayBuckets(7);
+    const now = new Date();
+    const sinceForMonths = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+    const sinceForDays = new Date();
+    sinceForDays.setDate(sinceForDays.getDate() - 6);
+    sinceForDays.setHours(0, 0, 0, 0);
+
     const [
       totalParents,
       totalChildren,
+      totalAdmins,
       totalTransactions,
       pendingTransactions,
       approvedTransactions,
@@ -161,9 +204,18 @@ router.get("/analytics", authMiddleware, requireRole("admin"), async (req: Authe
       totalQuizzes,
       earnCount,
       spendCount,
+      deposits,
+      transactionsForMonths,
+      pendingWithdrawalsRaw,
+      lessonAssignments,
+      quizzes,
+      actionLogs,
+      activeUsersCount,
+      savingsGoals,
     ] = await Promise.all([
       prisma.user.count({ where: { role: Role.parent } }),
       prisma.user.count({ where: { role: Role.child } }),
+      prisma.user.count({ where: { role: Role.admin } }),
       prisma.transaction.count(),
       prisma.transaction.count({ where: { status: TransactionStatus.pending } }),
       prisma.transaction.count({ where: { status: TransactionStatus.approved } }),
@@ -171,11 +223,57 @@ router.get("/analytics", authMiddleware, requireRole("admin"), async (req: Authe
       prisma.quiz.count(),
       prisma.transaction.count({ where: { type: TransactionType.earn } }),
       prisma.transaction.count({ where: { type: TransactionType.spend } }),
+      prisma.parentDeposit.findMany({ where: { createdAt: { gte: sinceForMonths } }, select: { amount: true, createdAt: true } }),
+      prisma.transaction.findMany({
+        where: { createdAt: { gte: sinceForMonths } },
+        select: { amount: true, type: true, status: true, withdrawalSource: true, description: true, createdAt: true },
+      }),
+      prisma.transaction.findMany({
+        where: { type: TransactionType.spend, status: TransactionStatus.pending },
+        include: { child: { include: { parent: { select: { fullName: true, email: true } } } } },
+        orderBy: { createdAt: "desc" },
+        take: 6,
+      }),
+      prisma.childLessonAssignment.findMany({
+        include: { child: true, lesson: { select: { title: true } } },
+        orderBy: { updatedAt: "desc" },
+      }),
+      prisma.quiz.findMany({ orderBy: { createdAt: "desc" }, take: 50 }),
+      prisma.dashboardActionLog.findMany({ where: { createdAt: { gte: sinceForDays } }, select: { userId: true, createdAt: true, role: true } }),
+      prisma.user.count({ where: { dashboardActionLogs: { some: { createdAt: { gte: sinceForDays } } } } }),
+      prisma.savingsGoal.findMany({ include: { child: true }, orderBy: { updatedAt: "desc" }, take: 10 }),
     ]);
+
+    const approvedEarnAmount = transactionsForMonths
+      .filter((tx) => tx.status === TransactionStatus.approved && tx.type === TransactionType.earn)
+      .reduce((sum, tx) => sum + Number(tx.amount), 0);
+    const approvedSpendAmount = transactionsForMonths
+      .filter((tx) => tx.status === TransactionStatus.approved && tx.type === TransactionType.spend)
+      .reduce((sum, tx) => sum + Number(tx.amount), 0);
+    const totalDeposits = deposits.reduce((sum, deposit) => sum + Number(deposit.amount), 0);
+
+    const monthlyTransactions = monthBuckets.map((bucket) => {
+      const monthTransactions = transactionsForMonths.filter((tx) => sameMonth(tx.createdAt, bucket));
+      const monthDeposits = deposits.filter((deposit) => sameMonth(deposit.createdAt, bucket));
+      return {
+        month: bucket.label,
+        transactions: monthTransactions.length,
+        deposits: monthDeposits.reduce((sum, deposit) => sum + Number(deposit.amount), 0),
+        withdrawals: monthTransactions.filter((tx) => tx.type === TransactionType.spend).reduce((sum, tx) => sum + Number(tx.amount), 0),
+      };
+    });
+
+    const completedLessons = lessonAssignments.filter((assignment) => assignment.progressPercent >= 100 || assignment.status === "completed").length;
+    const averageLearningProgress = lessonAssignments.length
+      ? Math.round(lessonAssignments.reduce((sum, assignment) => sum + assignment.progressPercent, 0) / lessonAssignments.length)
+      : 0;
+
+    const publishedQuizzes = quizzes.filter((quiz) => quiz.isPublished).length;
 
     res.json({
       totalParents,
       totalChildren,
+      totalAdmins,
       totalTransactions,
       pendingTransactions,
       approvedTransactions,
@@ -183,6 +281,71 @@ router.get("/analytics", authMiddleware, requireRole("admin"), async (req: Authe
       totalQuizzes,
       earnCount,
       spendCount,
+      usersByRole: [
+        { role: "Parents", count: totalParents },
+        { role: "Children", count: totalChildren },
+        { role: "Admins", count: totalAdmins },
+      ],
+      depositsVsWithdrawals: {
+        deposits: totalDeposits,
+        withdrawals: approvedSpendAmount,
+        earned: approvedEarnAmount,
+      },
+      monthlyTransactions,
+      pendingWithdrawals: {
+        count: pendingWithdrawalsRaw.length,
+        totalAmount: pendingWithdrawalsRaw.reduce((sum, tx) => sum + Number(tx.amount), 0),
+        items: pendingWithdrawalsRaw.map((tx) => ({
+          id: tx.id,
+          childName: tx.child.nickname,
+          parentName: tx.child.parent.fullName ?? tx.child.parent.email,
+          amount: Number(tx.amount),
+          description: tx.description,
+          createdAt: tx.createdAt.toISOString(),
+        })),
+      },
+      learningProgress: {
+        assigned: lessonAssignments.length,
+        completed: completedLessons,
+        inProgress: lessonAssignments.filter((assignment) => assignment.progressPercent > 0 && assignment.progressPercent < 100).length,
+        averageProgress: averageLearningProgress,
+        byChild: lessonAssignments.slice(0, 8).map((assignment) => ({
+          childName: assignment.child.nickname,
+          lessonTitle: assignment.lesson.title,
+          progressPercent: assignment.progressPercent,
+        })),
+      },
+      quizPerformance: {
+        totalQuizzes,
+        published: publishedQuizzes,
+        drafts: Math.max(0, totalQuizzes - publishedQuizzes),
+        completionRate: totalQuizzes ? Math.round((publishedQuizzes / totalQuizzes) * 100) : 0,
+        monthlyPublished: monthBuckets.map((bucket) => ({
+          month: bucket.label,
+          count: quizzes.filter((quiz) => quiz.isPublished && sameMonth(quiz.createdAt, bucket)).length,
+        })),
+      },
+      activeUsers: {
+        activeUsersCount,
+        daily: dayBuckets.map((bucket) => ({
+          day: bucket.label,
+          count: new Set(actionLogs.filter((log) => sameDay(log.createdAt, bucket)).map((log) => log.userId)).size,
+        })),
+        byRole: [Role.admin, Role.parent, Role.child].map((role) => ({
+          role,
+          count: new Set(actionLogs.filter((log) => log.role === role).map((log) => log.userId)).size,
+        })),
+      },
+      savingsGoalsProgress: savingsGoals.map((goal) => ({
+        id: goal.id,
+        title: goal.title,
+        childName: goal.child.nickname,
+        currentAmount: Number(goal.currentAmount),
+        targetAmount: Number(goal.targetAmount),
+        progressPercent: goal.targetAmount > 0 ? Math.min(100, Math.round((Number(goal.currentAmount) / Number(goal.targetAmount)) * 100)) : 0,
+        status: goal.status,
+      })),
+      activeSavingsGoals: savingsGoals.filter((goal) => goal.status === GoalStatus.active).length,
     });
   } catch (error) {
     console.error("Get analytics error:", error);

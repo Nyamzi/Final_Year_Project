@@ -29,14 +29,23 @@ export async function authMiddleware(req: AuthenticatedRequest, res: Response, n
   }
 
   let appUser: { id: string; email: string; role: UserRole; isActive: boolean } | null = null;
+  const findAppUser = () => prisma.user.findUnique({
+    where: { id: authUserId },
+    select: { id: true, email: true, role: true, isActive: true },
+  });
+
   try {
-    appUser = await prisma.user.findUnique({
-      where: { id: authUserId },
-      select: { id: true, email: true, role: true, isActive: true },
-    });
+    appUser = await findAppUser();
   } catch (error) {
-    console.error("Database auth lookup failed:", error);
-    return res.status(503).json({ error: "Database temporarily unavailable. Please try again." });
+    console.warn("Database auth lookup failed. Reconnecting Prisma once...", error);
+    try {
+      await prisma.$disconnect();
+      await prisma.$connect();
+      appUser = await findAppUser();
+    } catch (retryError) {
+      console.error("Database auth lookup failed after reconnect:", retryError);
+      return res.status(503).json({ error: "Database temporarily unavailable. Please try again." });
+    }
   }
   if (!appUser) {
     return res.status(401).json({ error: "User profile not found" });
@@ -71,4 +80,6 @@ export function errorHandler(
   console.error("Unhandled error:", err);
   res.status(500).json({ error: "Internal server error" });
 }
+
+
 

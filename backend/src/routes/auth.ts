@@ -199,12 +199,16 @@ router.get("/me", authMiddleware, async (req: AuthenticatedRequest, res) => {
   }
 
   let nickname: string | null = null;
+  let childAge: number | null = null;
+  let aboutMe: string | null = null;
   if (user.role === Role.child) {
     const childProfile = await prisma.childProfile.findUnique({
       where: { childUserId: user.id },
-      select: { nickname: true },
+      select: { nickname: true, age: true, aboutMe: true },
     });
     nickname = childProfile?.nickname ?? null;
+    childAge = childProfile?.age ?? null;
+    aboutMe = childProfile?.aboutMe ?? null;
   }
 
   res.json({
@@ -218,6 +222,8 @@ router.get("/me", authMiddleware, async (req: AuthenticatedRequest, res) => {
       sex: user.sex,
       profileImageUrl: user.profileImageUrl,
       nickname,
+      childAge,
+      aboutMe,
     },
   });
 });

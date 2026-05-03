@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ReactNode, useEffect, useMemo, useState } from "react";
+import { Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { BarChart, LineChart, PieChart } from "react-native-chart-kit";
 import {
   AdminAnalytics,
   AdminChildUsersData,
@@ -58,11 +59,7 @@ const sidebarSections = [
 ];
 
 const categoryColors = ["#5b2ff4", "#2979ff", "#24aa5a", "#ffab14", "#a4a9bc"];
-
-const adminNavTargets: Partial<Record<string, Tab>> = {
-  Overview: "home",
-  "Learning Content": "lessons",
-};
+const chartColors = ["#5b2ff4", "#2979ff", "#24aa5a", "#ffab14", "#f43f5e", "#06b6d4"];
 
 const adminSidebarActions: Record<string, { action: string; tab?: Tab }> = {
   Overview: { action: "Open Overview", tab: "home" },
@@ -128,6 +125,16 @@ function StatusBadge({ label }: { label: string }) {
   );
 }
 
+const adminChartConfig = {
+  backgroundGradientFrom: "#ffffff",
+  backgroundGradientTo: "#ffffff",
+  decimalPlaces: 0,
+  color: (opacity = 1) => `rgba(91, 47, 244, ${opacity})`,
+  labelColor: (opacity = 1) => `rgba(63, 70, 100, ${opacity})`,
+  propsForDots: { r: "4", strokeWidth: "2", stroke: "#5b2ff4" },
+  propsForBackgroundLines: { stroke: "#edf0f7" },
+};
+
 function AdminStatCard({ title, value, subtitle }: { title: string; value: string; subtitle?: string }) {
   return (
     <View style={styles.adminStatCard}>
@@ -138,6 +145,205 @@ function AdminStatCard({ title, value, subtitle }: { title: string; value: strin
   );
 }
 
+function ChartEmptyState({ message = "Not enough data yet." }: { message?: string }) {
+  return (
+    <View style={styles.chartEmptyState}>
+      <Text style={styles.chartEmptyText}>{message}</Text>
+    </View>
+  );
+}
+
+function AdminChartCard({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <View style={styles.analyticsCard}>
+      <Text style={styles.cardTitle}>{title}</Text>
+      {children}
+    </View>
+  );
+}
+
+function ProgressList({ items }: { items: Array<{ label: string; value: number; subLabel?: string }> }) {
+  if (items.length === 0) return <ChartEmptyState />;
+  return (
+    <View style={styles.progressList}>
+      {items.map((item) => (
+        <View key={`${item.label}-${item.subLabel ?? ""}`} style={styles.progressRow}>
+          <View style={styles.progressRowHeader}>
+            <Text style={styles.progressLabel}>{item.label}</Text>
+            <Text style={styles.progressValue}>{item.value}%</Text>
+          </View>
+          {item.subLabel ? <Text style={styles.progressSubLabel}>{item.subLabel}</Text> : null}
+          <View style={styles.progressTrack}>
+            <View style={[styles.progressFill, { width: `${Math.max(3, Math.min(100, item.value))}%` }]} />
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function AdminAnalyticsCharts({ analytics, width }: { analytics: AdminAnalytics; width: number }) {
+  const chartWidth = Math.max(260, Math.min(width, 520));
+  const monthly = analytics.monthlyTransactions ?? [];
+  const userRoles = analytics.usersByRole ?? [
+    { role: "Parents", count: analytics.totalParents },
+    { role: "Children", count: analytics.totalChildren },
+    { role: "Admins", count: analytics.totalAdmins ?? 0 },
+  ];
+  const deposits = analytics.depositsVsWithdrawals ?? { deposits: 0, withdrawals: 0, earned: 0 };
+  const hasMonthly = monthly.some((item) => item.transactions > 0 || item.deposits > 0 || item.withdrawals > 0);
+  const hasUsers = userRoles.some((item) => item.count > 0);
+  const hasDeposits = deposits.deposits > 0 || deposits.withdrawals > 0 || deposits.earned > 0;
+  const activeDaily = analytics.activeUsers?.daily ?? [];
+
+  return (
+    <View style={styles.analyticsGrid}>
+      <AdminChartCard title="Total Users by Role">
+        {hasUsers ? (
+          <PieChart
+            data={userRoles.map((item, index) => ({
+              name: item.role,
+              population: item.count,
+              color: chartColors[index % chartColors.length],
+              legendFontColor: "#475467",
+              legendFontSize: 11,
+            }))}
+            width={chartWidth}
+            height={190}
+            chartConfig={adminChartConfig}
+            accessor="population"
+            backgroundColor="transparent"
+            paddingLeft="8"
+            absolute
+          />
+        ) : <ChartEmptyState />}
+      </AdminChartCard>
+
+      <AdminChartCard title="Deposits vs Withdrawals">
+        {hasDeposits ? (
+          <BarChart
+            data={{ labels: ["Deposits", "Withdrawals", "Earned"], datasets: [{ data: [deposits.deposits, deposits.withdrawals, deposits.earned] }] }}
+            width={chartWidth}
+            height={220}
+            yAxisLabel=""
+            yAxisSuffix=""
+            chartConfig={adminChartConfig}
+            fromZero
+            showValuesOnTopOfBars
+          />
+        ) : <ChartEmptyState />}
+      </AdminChartCard>
+
+      <AdminChartCard title="Monthly Transactions">
+        {hasMonthly ? (
+          <LineChart
+            data={{ labels: monthly.map((item) => item.month), datasets: [{ data: monthly.map((item) => item.transactions) }] }}
+            width={chartWidth}
+            height={220}
+            chartConfig={adminChartConfig}
+            bezier
+            fromZero
+          />
+        ) : <ChartEmptyState />}
+      </AdminChartCard>
+
+      <AdminChartCard title="Active Users">
+        {activeDaily.some((item) => item.count > 0) ? (
+          <LineChart
+            data={{ labels: activeDaily.map((item) => item.day), datasets: [{ data: activeDaily.map((item) => item.count) }] }}
+            width={chartWidth}
+            height={220}
+            chartConfig={adminChartConfig}
+            fromZero
+          />
+        ) : <ChartEmptyState message="No recent dashboard activity yet." />}
+        <Text style={styles.chartFootnote}>{formatNumber(analytics.activeUsers?.activeUsersCount ?? 0)} active users in the last 7 days</Text>
+      </AdminChartCard>
+    </View>
+  );
+}
+
+function AdminLearningCharts({ analytics, width }: { analytics: AdminAnalytics; width: number }) {
+  const chartWidth = Math.max(260, Math.min(width, 520));
+  const learning = analytics.learningProgress;
+  const quiz = analytics.quizPerformance;
+  const quizMonthly = quiz?.monthlyPublished ?? [];
+
+  return (
+    <View style={styles.analyticsGrid}>
+      <AdminChartCard title="Child Learning Progress">
+        {learning && learning.assigned > 0 ? (
+          <>
+            <View style={styles.learningSummaryRow}>
+              <AdminStatCard title="Avg Progress" value={`${learning.averageProgress}%`} />
+              <AdminStatCard title="Completed" value={formatNumber(learning.completed)} />
+              <AdminStatCard title="In Progress" value={formatNumber(learning.inProgress)} />
+            </View>
+            <ProgressList items={learning.byChild.map((item) => ({ label: item.childName, subLabel: item.lessonTitle, value: item.progressPercent }))} />
+          </>
+        ) : <ChartEmptyState message="Assign lessons to children to see progress." />}
+      </AdminChartCard>
+
+      <AdminChartCard title="Quiz Performance">
+        {quiz && quiz.totalQuizzes > 0 ? (
+          <>
+            <BarChart
+              data={{ labels: ["Published", "Drafts"], datasets: [{ data: [quiz.published, quiz.drafts] }] }}
+              width={chartWidth}
+              height={200}
+              yAxisLabel=""
+              yAxisSuffix=""
+              chartConfig={adminChartConfig}
+              fromZero
+              showValuesOnTopOfBars
+            />
+            <Text style={styles.chartFootnote}>{quiz.completionRate}% of quizzes are published</Text>
+          </>
+        ) : <ChartEmptyState message="Create quizzes to populate this chart." />}
+      </AdminChartCard>
+
+      <AdminChartCard title="Published Quizzes by Month">
+        {quizMonthly.some((item) => item.count > 0) ? (
+          <LineChart
+            data={{ labels: quizMonthly.map((item) => item.month), datasets: [{ data: quizMonthly.map((item) => item.count) }] }}
+            width={chartWidth}
+            height={200}
+            chartConfig={adminChartConfig}
+            fromZero
+          />
+        ) : <ChartEmptyState message="No published quiz trend yet." />}
+      </AdminChartCard>
+    </View>
+  );
+}
+
+function AdminSavingsAndPending({ analytics }: { analytics: AdminAnalytics }) {
+  const pending = analytics.pendingWithdrawals;
+  const goals = analytics.savingsGoalsProgress ?? [];
+  return (
+    <View style={styles.analyticsGrid}>
+      <AdminChartCard title="Pending Withdrawal Requests">
+        <View style={styles.learningSummaryRow}>
+          <AdminStatCard title="Pending" value={formatNumber(pending?.count ?? analytics.pendingTransactions)} />
+          <AdminStatCard title="Amount" value={`UGX ${Math.round(pending?.totalAmount ?? 0).toLocaleString()}`} />
+        </View>
+        {pending?.items.length ? pending.items.map((item) => (
+          <View key={item.id} style={styles.pendingWithdrawalRow}>
+            <View>
+              <Text style={styles.rowMain}>{item.childName}</Text>
+              <Text style={styles.rowMeta}>{item.parentName}</Text>
+            </View>
+            <Text style={styles.rowMain}>UGX {Math.round(item.amount).toLocaleString()}</Text>
+          </View>
+        )) : <ChartEmptyState message="No pending withdrawals right now." />}
+      </AdminChartCard>
+
+      <AdminChartCard title="Savings Goals Progress">
+        <ProgressList items={goals.map((goal) => ({ label: goal.title, subLabel: `${goal.childName} - UGX ${Math.round(goal.currentAmount).toLocaleString()} / ${Math.round(goal.targetAmount).toLocaleString()}`, value: goal.progressPercent }))} />
+      </AdminChartCard>
+    </View>
+  );
+}
 function SearchFilterBar({
   searchLabel,
   searchValue,
@@ -177,6 +383,9 @@ function SearchFilterBar({
 }
 
 export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenProps) {
+  const { width } = useWindowDimensions();
+  const isMobile = width < 760;
+  const chartWidth = isMobile ? Math.max(260, width - 56) : Math.min(520, Math.max(320, (width - 360) / 2));
   const [tab, setTab] = useState<Tab>("home");
   const [activeSidebarLabel, setActiveSidebarLabel] = useState("Overview");
   const [analytics, setAnalytics] = useState<AdminAnalytics | null>(null);
@@ -329,14 +538,12 @@ export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenPr
     setLoading(true);
     setError("");
     try {
-      const [analyticsData, lessonsData, quizzesData, overviewData, parentUsersStats, childUsersStats] = await Promise.all([
-        apiAdminAnalytics(),
-        apiAdminLessons(),
-        apiAdminQuizzes(),
-        apiAdminOverview(),
-        apiAdminParentUsers(),
-        apiAdminChildUsers(),
-      ]);
+      const analyticsData = await apiAdminAnalytics();
+      const overviewData = await apiAdminOverview();
+      const parentUsersStats = await apiAdminParentUsers();
+      const childUsersStats = await apiAdminChildUsers();
+      const lessonsData = await apiAdminLessons();
+      const quizzesData = await apiAdminQuizzes();
       setAnalytics(analyticsData);
       setLessons(lessonsData.lessons);
       setQuizzes(quizzesData.quizzes);
@@ -488,13 +695,18 @@ export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenPr
   }
 
   async function handleSidebarPress(label: string) {
-    setActiveSidebarLabel(label);
     const config = adminSidebarActions[label];
-    if (!config) {
-      await handleAdminAction(`Open ${label}`);
-      return;
+    setActiveSidebarLabel(label);
+    if (config?.tab) {
+      setTab(config.tab);
     }
-    await handleAdminAction(config.action, config.tab);
+    clearMessages();
+
+    try {
+      await apiLogDashboardAction({ dashboard: "admin", action: config?.action ?? `Open ${label}` });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not log admin navigation.");
+    }
   }
 
   return (
@@ -516,8 +728,7 @@ export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenPr
             <View key={section.title || "main"} style={styles.menuSection}>
               {section.title ? <Text style={styles.menuSectionTitle}>{section.title}</Text> : null}
               {section.items.map((item) => {
-                const targetTab = adminNavTargets[item.label];
-                const isActive = activeSidebarLabel === item.label || (targetTab ? targetTab === tab : false);
+                const isActive = activeSidebarLabel === item.label;
                 return (
                   <Pressable
                     key={item.label}
@@ -561,7 +772,7 @@ export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenPr
 
         {!loading && tab === "home" && analytics && overview ? (
           <>
-            {activeSidebarLabel === "Parents" && parentUsersData ? (
+            {activeSidebarLabel === "Parents" ? (
               <>
                 <Text style={styles.title}>Parents Management</Text>
                 <Text style={styles.subtitle}>View and manage registered parent/guardian accounts.</Text>
@@ -573,6 +784,8 @@ export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenPr
                   <AdminStatCard title="New Parents This Month" value={formatNumber(parentRows.slice(0, 6).length)} />
                   <AdminStatCard title="Parents With Children" value={formatNumber(parentRows.filter((p) => p.childrenCount > 0).length)} />
                 </View>
+                <AdminAnalyticsCharts analytics={analytics} width={chartWidth} />
+                <AdminSavingsAndPending analytics={analytics} />
                 <SearchFilterBar
                   searchLabel="Search by name, email, or phone"
                   searchValue={parentSearch}
@@ -610,7 +823,7 @@ export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenPr
                   ))}
                 </View>
               </>
-            ) : activeSidebarLabel === "Children" && childUsersData ? (
+            ) : activeSidebarLabel === "Children" ? (
               <>
                 <Text style={styles.title}>Children Management</Text>
                 <Text style={styles.subtitle}>Monitor child accounts, wallet activity, learning progress, and safety controls.</Text>
@@ -622,6 +835,8 @@ export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenPr
                   <AdminStatCard title="Children With Savings Goals" value={formatNumber(childRows.filter((c) => c.goals > 0).length)} />
                   <AdminStatCard title="Pending Withdrawal Requests" value={formatNumber(childRows.reduce((s, c) => s + c.pendingRequests, 0))} />
                 </View>
+                <AdminLearningCharts analytics={analytics} width={chartWidth} />
+                <AdminSavingsAndPending analytics={analytics} />
                 <SearchFilterBar
                   searchLabel="Search by child name or parent name"
                   searchValue={childSearch}
@@ -693,6 +908,10 @@ export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenPr
                 );
               })}
             </View>
+
+            <AdminAnalyticsCharts analytics={analytics} width={chartWidth} />
+            <AdminLearningCharts analytics={analytics} width={chartWidth} />
+            <AdminSavingsAndPending analytics={analytics} />
 
             <View style={styles.gridThreeCols}>
               <View style={[styles.softCard, styles.activityCard]}>
@@ -809,7 +1028,6 @@ export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenPr
                 </View>
               </View>
             </View>
-
             <View style={styles.gridThreeCols}>
               <View style={[styles.softCard, styles.colSpanTwo]}>
                 <View style={styles.cardHeadRow}>
@@ -954,7 +1172,7 @@ export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenPr
                 <AppButton title="Upload For Parents" loading={submitting} onPress={handleUploadForParents} />
               ) : null}
               <AppButton title="Create Lesson" loading={submitting} onPress={handleCreateLesson} />
-              <AppButton title="Back to Overview" variant="ghost" onPress={() => setTab("home")} />
+              <AppButton title="Back to Overview" variant="ghost" onPress={() => { setActiveSidebarLabel("Overview"); setTab("home"); }} />
             </View>
           </View>
         ) : null}
@@ -975,7 +1193,7 @@ export function AdminDashboardScreen({ email, onLogout }: AdminDashboardScreenPr
               <Text style={styles.cardTitle}>Create Quiz</Text>
               <AppInput label="Title" value={quizTitle} onChangeText={setQuizTitle} />
               <AppButton title="Create Quiz" loading={submitting} onPress={handleCreateQuiz} />
-              <AppButton title="Back to Overview" variant="ghost" onPress={() => setTab("home")} />
+              <AppButton title="Back to Overview" variant="ghost" onPress={() => { setActiveSidebarLabel("Overview"); setTab("home"); }} />
             </View>
           </View>
         ) : null}
@@ -1332,7 +1550,102 @@ const styles = StyleSheet.create({
     fontSize: 11,
     marginTop: 4,
   },
-  adminFilterWrap: {
+  analyticsGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 14,
+    alignItems: "stretch",
+  },
+  analyticsCard: {
+    flexGrow: 1,
+    flexBasis: 320,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#e6e9f5",
+    backgroundColor: "#ffffff",
+    padding: 14,
+    gap: 10,
+    overflow: "hidden",
+    shadowColor: "#1d2b53",
+    shadowOpacity: 0.05,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+  },
+  chartEmptyState: {
+    minHeight: 140,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderColor: "#d9deea",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 16,
+    backgroundColor: "#fafbff",
+  },
+  chartEmptyText: {
+    color: "#667085",
+    fontSize: 13,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  chartFootnote: {
+    color: "#667085",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  progressList: {
+    gap: 10,
+  },
+  progressRow: {
+    gap: 6,
+  },
+  progressRowHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  progressLabel: {
+    color: "#1f2750",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  progressValue: {
+    color: "#5b2ff4",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  progressSubLabel: {
+    color: "#667085",
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  progressTrack: {
+    height: 9,
+    borderRadius: 999,
+    backgroundColor: "#edf0f7",
+    overflow: "hidden",
+  },
+  progressFill: {
+    height: "100%",
+    borderRadius: 999,
+    backgroundColor: "#5b2ff4",
+  },
+  learningSummaryRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  pendingWithdrawalRow: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#edf0f7",
+    backgroundColor: "#fbfcff",
+    padding: 10,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 10,
+    alignItems: "center",
+  },  adminFilterWrap: {
     borderRadius: 12,
     backgroundColor: "#ffffff",
     borderWidth: 1,
@@ -1942,3 +2255,14 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
 });
+
+
+
+
+
+
+
+
+
+
+
