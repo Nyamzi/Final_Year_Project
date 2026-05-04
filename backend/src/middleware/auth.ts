@@ -34,17 +34,20 @@ export async function authMiddleware(req: AuthenticatedRequest, res: Response, n
     select: { id: true, email: true, role: true, isActive: true },
   });
 
-  try {
-    appUser = await findAppUser();
-  } catch (error) {
-    console.warn("Database auth lookup failed. Reconnecting Prisma once...", error);
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      await prisma.$disconnect();
-      await prisma.$connect();
       appUser = await findAppUser();
-    } catch (retryError) {
-      console.error("Database auth lookup failed after reconnect:", retryError);
-      return res.status(503).json({ error: "Database temporarily unavailable. Please try again." });
+      break;
+    } catch (error) {
+      if (attempt === 3) {
+        console.error("Database auth lookup failed after retries:", error);
+        return res.status(503).json({ error: "Database temporarily unavailable. Please try again." });
+      }
+
+      const delayMs = attempt * 600;
+      console.warn(`Database auth lookup failed. Retrying in ${delayMs}ms (${attempt}/3).`);
+      await prisma.$connect().catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
   }
   if (!appUser) {
@@ -80,6 +83,8 @@ export function errorHandler(
   console.error("Unhandled error:", err);
   res.status(500).json({ error: "Internal server error" });
 }
+
+
 
 
 

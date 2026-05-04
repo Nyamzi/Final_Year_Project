@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Animated, Image, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { Animated, Easing, Image, Platform, Pressable, ScrollView, StatusBar, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import {
   AllowanceSummary,
@@ -185,6 +185,8 @@ function AnimatedTileButton({ children, style, onPress }: AnimatedTileButtonProp
 export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenProps) {
   const { width } = useWindowDimensions();
   const isMobile = width < 700;
+  const mobileTopInset = isMobile && Platform.OS === "android" ? StatusBar.currentHeight ?? 24 : 0;
+  const mobileBottomInset = isMobile ? (Platform.OS === "android" ? 44 : 28) : 0;
   const username = email.split("@")[0];
   const dailyTip = useMemo(() => {
     const today = new Date();
@@ -193,6 +195,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
   }, []);
 
   const [tab, setTab] = useState<TabKey>("home");
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [wallet, setWallet] = useState<WalletSummary | null>(null);
   const [savingsGoals, setSavingsGoals] = useState<SavingsGoalSummary[]>([]);
   const [transactions, setTransactions] = useState<TransactionSummary[]>([]);
@@ -206,6 +209,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
+  const [readNotificationIds, setReadNotificationIds] = useState<string[]>([]);
 
   const [txType, setTxType] = useState<"earn" | "spend">("earn");
   const [txAmount, setTxAmount] = useState("");
@@ -247,6 +251,8 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
   const homeEnterAnim = useRef(new Animated.Value(0)).current;
   const activeTabAnim = useRef(new Animated.Value(1)).current;
   const rewardAnim = useRef(new Animated.Value(0)).current;
+  const sidebarTranslateX = useRef(new Animated.Value(-286)).current;
+  const sidebarBackdropOpacity = useRef(new Animated.Value(0)).current;
 
   const completedChores = useMemo(
     () => chores.filter((chore) => chore.status === "completed").length,
@@ -342,6 +348,18 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
     [transactions]
   );
   const netBalance = totalMoneyIn - totalMoneyOut;
+  const notificationItems = useMemo(
+    () =>
+      transactions.slice(0, 8).map((tx) => ({
+        id: tx.id,
+        title: tx.type === "spend" ? "Withdrawal update" : "Money received",
+        message: tx.type === "spend" ? "Your withdrawal request was processed." : "You received a wallet credit.",
+        createdAt: tx.createdAt,
+        isRead: readNotificationIds.includes(tx.id),
+      })),
+    [readNotificationIds, transactions]
+  );
+  const unreadNotificationCount = notificationItems.filter((item) => !item.isRead).length;
   const safeErrorMessage =
     errorMessage && /unauthorized/i.test(errorMessage) ? "Please log in to continue." : errorMessage;
   const profileMenuItems = [
@@ -503,6 +521,35 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
     }).start();
   }, [activeTabAnim, isMobile, tab]);
 
+  useEffect(() => {
+    if (!isMobile) {
+      sidebarTranslateX.setValue(0);
+      sidebarBackdropOpacity.setValue(0);
+      return;
+    }
+
+    Animated.parallel([
+      Animated.timing(sidebarTranslateX, {
+        toValue: isSidebarOpen ? 0 : -286,
+        duration: 220,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(sidebarBackdropOpacity, {
+        toValue: isSidebarOpen ? 1 : 0,
+        duration: 180,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [isMobile, isSidebarOpen, sidebarBackdropOpacity, sidebarTranslateX]);
+
+  useEffect(() => {
+    if (tab !== "notifications" || notificationItems.length === 0) return;
+    const unreadIds = notificationItems.filter((item) => !item.isRead).map((item) => item.id);
+    if (unreadIds.length === 0) return;
+    setReadNotificationIds((prev) => Array.from(new Set([...prev, ...unreadIds])));
+  }, [notificationItems, tab]);
   useEffect(() => {
     if (!showReward) return;
     rewardAnim.setValue(0);
@@ -913,6 +960,13 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
       setIsSubmitting(false);
     }
   }
+  function handleTabPress(nextTab: TabKey) {
+    setTab(nextTab);
+    if (isMobile) {
+      setIsSidebarOpen(false);
+    }
+  }
+
   async function handleChangePassword() {
     setIsSubmitting(true);
     clearMessages();
@@ -931,11 +985,27 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
   }
 
   return (
-    <View style={[styles.wrap, isMobile ? styles.wrapMobile : null]}>
-      {!isMobile ? (
-        <View style={styles.webSidebar}>
-          <View style={styles.webBrandWrap}>
+    <View style={[styles.wrap, isMobile ? styles.wrapMobile : null, isMobile ? { paddingTop: mobileTopInset } : null]}>
+      {isMobile ? (
+        <Animated.View pointerEvents={isSidebarOpen ? "auto" : "none"} style={[styles.mobileSidebarBackdrop, { opacity: sidebarBackdropOpacity }]}>
+          <Pressable style={styles.mobileSidebarBackdropTap} onPress={() => setIsSidebarOpen(false)} />
+        </Animated.View>
+      ) : null}
+
+      <Animated.View
+        style={[
+          styles.webSidebar,
+          isMobile ? styles.webSidebarMobileDrawer : null,
+          isMobile ? { transform: [{ translateX: sidebarTranslateX }] } : null,
+        ]}
+      >
+          <View style={[styles.webBrandWrap, isMobile ? styles.webBrandWrapMobile : null]}>
             <Text style={styles.webBrand}>KidsBank</Text>
+            {isMobile ? (
+              <Pressable style={styles.mobileSidebarCloseBtn} onPress={() => setIsSidebarOpen(false)}>
+                <Text style={styles.mobileSidebarCloseText}>x</Text>
+              </Pressable>
+            ) : null}
           </View>
           <View style={styles.webSidebarProfile}>
             <View style={styles.webSidebarAvatarOuter}>
@@ -960,7 +1030,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
             {webNavItems.map((item) => {
               const active = tab === item.key;
               return (
-                <Pressable key={item.key} style={[styles.webNavItem, active ? styles.webNavItemActive : null]} onPress={() => setTab(item.key)}>
+                <Pressable key={item.key} style={[styles.webNavItem, active ? styles.webNavItemActive : null]} onPress={() => handleTabPress(item.key)}>
                   <View style={[styles.webNavIconPill, active ? styles.webNavIconPillActive : null]}>
                     <Text style={styles.webNavIconEmoji}>{item.icon}</Text>
                   </View>
@@ -972,12 +1042,15 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
           <Pressable style={styles.webLogoutBtn} onPress={onLogout}>
             <Text style={styles.webLogoutBtnText}>Log Out</Text>
           </Pressable>
-        </View>
-      ) : null}
+        </Animated.View>
 
       <ScrollView
         style={[styles.contentCard, isMobile ? styles.contentCardMobile : null]}
-        contentContainerStyle={[styles.contentCardInner, isMobile ? styles.contentCardInnerMobile : null]}
+        contentContainerStyle={[
+          styles.contentCardInner,
+          isMobile ? styles.contentCardInnerMobile : null,
+          isMobile ? { paddingBottom: 124 + mobileBottomInset } : null,
+        ]}
         showsVerticalScrollIndicator={false}
       >
         {!isMobile ? (
@@ -1002,11 +1075,18 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
               </View>
             </View>
             <Image source={getTabHeroImage(tab)} style={styles.mobileHeaderArt} resizeMode="cover" />
-            <Pressable style={styles.mobileBellBtn} onPress={() => setTab("settings")}>
+            <Pressable style={styles.mobileMenuBtn} onPress={() => setIsSidebarOpen(true)}>
+              <View style={styles.mobileMenuLine} />
+              <View style={styles.mobileMenuLine} />
+              <View style={styles.mobileMenuLine} />
+            </Pressable>
+            <Pressable style={styles.mobileBellBtn} onPress={() => handleTabPress("notifications")}>
               <Text style={styles.mobileBellIcon}>{"\u{1F514}"}</Text>
-              <View style={styles.mobileBellBadge}>
-                <Text style={styles.mobileBellBadgeText}>3</Text>
-              </View>
+              {unreadNotificationCount > 0 ? (
+                <View style={styles.mobileBellBadge}>
+                  <Text style={styles.mobileBellBadgeText}>{Math.min(9, unreadNotificationCount)}</Text>
+                </View>
+              ) : null}
             </Pressable>
           </View>
         ) : (
@@ -1431,6 +1511,107 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
           </View>
         ) : null}
 
+        {!isLoading && tab === "wallet" && isMobile ? (
+          <View style={styles.sectionWrap}>
+            <View style={styles.mobileBalanceCard}>
+              <Image source={walletIllustration4} style={styles.mobileBalanceMascot} resizeMode="contain" />
+              <Text style={styles.mobileBalanceLabel}>My Wallet Balance</Text>
+              <Text style={styles.mobileBalanceAmount}>{formatMoney(walletBalance)}</Text>
+              <Text style={styles.mobileBalanceMeta}>Available Balance</Text>
+            </View>
+
+            <View style={[styles.softCard, styles.softCardMobile, styles.kidCardBlue]}>
+              <View style={styles.mobileSectionHeader}>
+                <Text style={styles.cardTitle}>Withdraw Money</Text>
+                <Pressable style={styles.learningActionBtnPrimary} onPress={() => setShowWithdrawForm((prev) => !prev)}>
+                  <Text style={styles.learningActionBtnPrimaryText}>{showWithdrawForm ? "Close" : "Withdraw"}</Text>
+                </Pressable>
+              </View>
+              <Text style={styles.rowMeta}>Ask to use money from your wallet or a completed goal.</Text>
+              {showWithdrawForm ? (
+                <View style={styles.withdrawForm}>
+                  <View style={styles.choiceRow}>
+                    <Pressable style={[styles.choicePill, withdrawSource === "wallet" ? styles.choicePillActive : null]} onPress={() => setWithdrawSource("wallet")}>
+                      <Text style={[styles.choiceText, withdrawSource === "wallet" ? styles.choiceTextActive : null]}>My Account</Text>
+                    </Pressable>
+                    <Pressable
+                      style={[styles.choicePill, withdrawSource === "goal" ? styles.choicePillActive : null]}
+                      onPress={() => {
+                        setWithdrawSource("goal");
+                        if (!withdrawGoalId && withdrawableCompletedGoals[0]) setWithdrawGoalId(withdrawableCompletedGoals[0].id);
+                      }}
+                    >
+                      <Text style={[styles.choiceText, withdrawSource === "goal" ? styles.choiceTextActive : null]}>Completed Goal</Text>
+                    </Pressable>
+                  </View>
+                  {withdrawSource === "goal" ? (
+                    <View style={styles.withdrawGoalList}>
+                      {withdrawableCompletedGoals.map((goal) => (
+                        <Pressable
+                          key={goal.id}
+                          style={[styles.withdrawGoalOption, withdrawGoalId === goal.id ? styles.withdrawGoalOptionActive : null]}
+                          onPress={() => {
+                            setWithdrawGoalId(goal.id);
+                            setWithdrawAmount(String(Math.round(goal.currentAmount)));
+                          }}
+                        >
+                          <Text style={styles.rowMain}>{goal.title}</Text>
+                          <Text style={styles.rowMeta}>{formatMoney(goal.currentAmount)} saved</Text>
+                        </Pressable>
+                      ))}
+                      {withdrawableCompletedGoals.length === 0 ? <Text style={styles.rowMeta}>No completed goals have money left to withdraw.</Text> : null}
+                    </View>
+                  ) : null}
+                  <AppInput label="Amount (UGX)" value={withdrawAmount} onChangeText={setWithdrawAmount} keyboardType="numeric" placeholder="10000" />
+                  <AppInput label="Reason" value={withdrawDescription} onChangeText={setWithdrawDescription} placeholder="Optional" />
+                  <AppButton title="Submit Withdrawal" loading={isSubmitting} onPress={handleCreateWithdrawal} />
+                </View>
+              ) : null}
+            </View>
+
+            <View style={[styles.softCard, styles.softCardMobile, styles.kidCardYellow]}>
+              <Text style={styles.cardTitle}>Budgeting</Text>
+              <Text style={styles.rowMeta}>{hasSavedBudget ? `${budget?.title ?? "Budget"} saved for this month.` : "Try 50% saving, 30% spending, 20% sharing."}</Text>
+              <View style={styles.webBudgetRows}>
+                <View style={styles.mobileBudgetRow}><Text style={styles.rowMain}>Save</Text><Text style={styles.rowMain}>{formatMoney(displayedBudget.saveAmount)}</Text></View>
+                <View style={styles.mobileBudgetRow}><Text style={styles.rowMain}>Spend</Text><Text style={styles.rowMain}>{formatMoney(displayedBudget.spendAmount)}</Text></View>
+                <View style={styles.mobileBudgetRow}><Text style={styles.rowMain}>Share</Text><Text style={styles.rowMain}>{formatMoney(displayedBudget.shareAmount)}</Text></View>
+              </View>
+              <View style={styles.webBudgetActions}>
+                <Pressable style={[styles.webBudgetButton, isSubmitting && styles.disabledButton]} onPress={() => handleSaveBudgetPreset("smart")} disabled={isSubmitting}>
+                  <Text style={styles.webBudgetButtonText}>Save 50/30/20</Text>
+                </Pressable>
+                <Pressable style={[styles.webBudgetButtonAlt, isSubmitting && styles.disabledButton]} onPress={() => handleSaveBudgetPreset("saveMore")} disabled={isSubmitting}>
+                  <Text style={styles.webBudgetButtonAltText}>Save More</Text>
+                </Pressable>
+                {hasSavedBudget ? (
+                  <Pressable style={[styles.learningActionBtn, isSubmitting && styles.disabledButton]} onPress={handleClearBudget} disabled={isSubmitting}>
+                    <Text style={styles.learningActionBtnText}>Clear</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            </View>
+
+            <View style={[styles.softCard, styles.softCardMobile, styles.kidCardPink]}>
+              <View style={styles.mobileSectionHeader}>
+                <Text style={styles.cardTitle}>Recent Transactions</Text>
+                <Pressable onPress={() => handleTabPress("transactions")}>
+                  <Text style={styles.mobileSectionLink}>View All</Text>
+                </Pressable>
+              </View>
+              {transactions.slice(0, 4).map((tx) => (
+                <View key={tx.id} style={[styles.rowItem, styles.rowItemMobile]}>
+                  <View style={styles.rowContent}>
+                    <Text style={styles.rowMain}>{tx.description || (tx.type === "earn" ? "Money In" : "Money Out")}</Text>
+                    <Text style={styles.rowMeta}>{new Date(tx.createdAt).toLocaleDateString()} - {tx.status}</Text>
+                  </View>
+                  <Text style={[styles.rowMeta, tx.type === "earn" ? styles.tableCellSuccess : styles.tableCellPending]}>{tx.type === "earn" ? "+" : "-"} {formatMoney(tx.amount)}</Text>
+                </View>
+              ))}
+              {transactions.length === 0 ? <Text style={styles.infoText}>No transactions yet.</Text> : null}
+            </View>
+          </View>
+        ) : null}
         {tab === "wallet" && !isMobile ? (
           <View style={styles.sectionWrap}>
             <View style={styles.webWalletTopGrid}>
@@ -1759,6 +1940,29 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
           </View>
         ) : null}
 
+        {!isLoading && tab === "notifications" && isMobile ? (
+          <View style={styles.sectionWrap}>
+            <View style={styles.mobileSectionHeader}>
+              <View>
+                <Text style={styles.mobileSectionTitle}>Notifications</Text>
+                <Text style={styles.rowMeta}>Wallet, chores, and goal updates</Text>
+              </View>
+              <Text style={styles.mobileSectionLink}>{unreadNotificationCount > 0 ? `${unreadNotificationCount} unread` : "All read"}</Text>
+            </View>
+            <View style={[styles.softCard, styles.softCardMobile, styles.kidCardBlue]}>
+              {notificationItems.map((item) => (
+                <View key={item.id} style={[styles.rowItem, styles.rowItemMobile, item.isRead ? null : styles.notificationUnreadRow]}>
+                  <View style={styles.rowContent}>
+                    <Text style={styles.rowMain}>{item.title}</Text>
+                    <Text style={styles.rowMeta}>{item.message}</Text>
+                  </View>
+                  <Text style={[styles.rowMeta, styles.rowMetaRightMobile]}>{new Date(item.createdAt).toLocaleDateString()}</Text>
+                </View>
+              ))}
+              {notificationItems.length === 0 ? <Text style={styles.infoText}>No notifications yet.</Text> : null}
+            </View>
+          </View>
+        ) : null}
         {!isLoading && tab === "notifications" && !isMobile ? (
           <View style={styles.sectionWrap}>
             <View style={styles.webTopRow}>
@@ -1768,18 +1972,16 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
               </View>
             </View>
             <View style={styles.webCard}>
-              {transactions.slice(0, 8).map((tx) => (
-                <View key={tx.id} style={styles.webProfileRow}>
+              {notificationItems.map((item) => (
+                <View key={item.id} style={styles.webProfileRow}>
                   <View>
-                    <Text style={styles.rowMain}>
-                      {tx.type === "earn" ? "Money added to your wallet" : "Money spent from your wallet"}
-                    </Text>
-                    <Text style={styles.rowMeta}>{tx.description || "Transaction update"}</Text>
+                    <Text style={styles.rowMain}>{item.title}</Text>
+                    <Text style={styles.rowMeta}>{item.message}</Text>
                   </View>
-                  <Text style={styles.rowMeta}>{new Date(tx.createdAt).toLocaleDateString()}</Text>
+                  <Text style={styles.rowMeta}>{new Date(item.createdAt).toLocaleDateString()}</Text>
                 </View>
               ))}
-              {transactions.length === 0 ? <Text style={styles.infoText}>No notifications yet.</Text> : null}
+              {notificationItems.length === 0 ? <Text style={styles.infoText}>No notifications yet.</Text> : null}
             </View>
           </View>
         ) : null}
@@ -2158,42 +2360,9 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
 
         {!isLoading && tab === "actions" ? (
           <View style={styles.sectionWrap}>
-            <View style={styles.softCard}>
-              <Text style={styles.cardTitle}>Add Transaction</Text>
-              <View style={styles.choiceRow}>
-                <Pressable
-                  style={[styles.choicePill, txType === "earn" ? styles.choicePillActive : null]}
-                  onPress={() => setTxType("earn")}
-                >
-                  <Text style={[styles.choiceText, txType === "earn" ? styles.choiceTextActive : null]}>Earn</Text>
-                </Pressable>
-                <Pressable
-                  style={[styles.choicePill, txType === "spend" ? styles.choicePillActive : null]}
-                  onPress={() => setTxType("spend")}
-                >
-                  <Text style={[styles.choiceText, txType === "spend" ? styles.choiceTextActive : null]}>Spend</Text>
-                </Pressable>
-              </View>
-              <AppInput
-                label="Amount (UGX)"
-                value={txAmount}
-                onChangeText={setTxAmount}
-                keyboardType="numeric"
-                placeholder="1000"
-              />
-              <AppInput
-                label="Description"
-                value={txDescription}
-                onChangeText={setTxDescription}
-                placeholder="Optional"
-                multiline
-                numberOfLines={3}
-              />
-              <AppButton title="Submit Transaction" loading={isSubmitting} onPress={handleCreateTransaction} />
-            </View>
 
             <View style={styles.softCard}>
-              <Text style={styles.cardTitle}>Create Savings Goal</Text>
+              <Text style={styles.cardTitle}>Create Goal</Text>
               <AppInput
                 label="Goal Title"
                 value={goalTitle}
@@ -2346,14 +2515,14 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
       </ScrollView>
 
       {isMobile ? (
-        <View style={styles.mobileBottomNav}>
+        <View style={[styles.mobileBottomNav, { bottom: 8 + mobileBottomInset }]}>
           <AnimatedTileButton
             style={[
               styles.mobileBottomNavItem,
               tab === "home" ? styles.mobileBottomNavItemActive : null,
               tab === "home" ? { transform: [{ scale: activeTabAnim }] } : null,
             ]}
-            onPress={() => setTab("home")}
+            onPress={() => handleTabPress("home")}
           >
             <Image source={moneyIllustration1} style={styles.mobileBottomNavImage} resizeMode="cover" />
             <Text style={[styles.mobileBottomNavText, tab === "home" ? styles.mobileBottomNavTextActive : null]}>Home</Text>
@@ -2364,7 +2533,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
               tab === "learn" ? styles.mobileBottomNavItemActive : null,
               tab === "learn" ? { transform: [{ scale: activeTabAnim }] } : null,
             ]}
-            onPress={() => setTab("learn")}
+            onPress={() => handleTabPress("learn")}
           >
             <Image source={learnIllustration1} style={styles.mobileBottomNavImage} resizeMode="cover" />
             <Text style={[styles.mobileBottomNavText, tab === "learn" ? styles.mobileBottomNavTextActive : null]}>Learn</Text>
@@ -2375,7 +2544,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
               tab === "savings" ? styles.mobileBottomNavItemActive : null,
               tab === "savings" ? { transform: [{ scale: activeTabAnim }] } : null,
             ]}
-            onPress={() => setTab("savings")}
+            onPress={() => handleTabPress("savings")}
           >
             <Image source={goalIllustration1} style={styles.mobileBottomNavImage} resizeMode="cover" />
             <Text style={[styles.mobileBottomNavText, tab === "savings" ? styles.mobileBottomNavTextActive : null]}>Goals</Text>
@@ -2386,7 +2555,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
               tab === "chores" ? styles.mobileBottomNavItemActive : null,
               tab === "chores" ? { transform: [{ scale: activeTabAnim }] } : null,
             ]}
-            onPress={() => setTab("chores")}
+            onPress={() => handleTabPress("chores")}
           >
             <Image source={choreIllustration1} style={styles.mobileBottomNavImage} resizeMode="cover" />
             <Text style={[styles.mobileBottomNavText, tab === "chores" ? styles.mobileBottomNavTextActive : null]}>Chores</Text>
@@ -2397,7 +2566,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
               tab === "settings" ? styles.mobileBottomNavItemActive : null,
               tab === "settings" ? { transform: [{ scale: activeTabAnim }] } : null,
             ]}
-            onPress={() => setTab("settings")}
+            onPress={() => handleTabPress("settings")}
           >
             <Image source={learnIllustration3} style={styles.mobileBottomNavImage} resizeMode="cover" />
             <Text style={[styles.mobileBottomNavText, tab === "settings" ? styles.mobileBottomNavTextActive : null]}>Profile</Text>
@@ -2421,6 +2590,18 @@ const styles = StyleSheet.create({
   wrapMobile: {
     maxWidth: "100%",
     flexDirection: "column",
+  },
+  mobileSidebarBackdrop: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    backgroundColor: "rgba(11, 16, 45, 0.5)",
+    zIndex: 40,
+  },
+  mobileSidebarBackdropTap: {
+    flex: 1,
   },
   sidebarCard: {
     borderRadius: 18,
@@ -2527,6 +2708,23 @@ const styles = StyleSheet.create({
     color: theme.colors.text,
     fontWeight: "800",
     fontSize: 30,
+  },
+  mobileMenuBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 3,
+    backgroundColor: "#ffffff",
+    borderWidth: 2,
+    borderColor: "#ffd54a",
+  },
+  mobileMenuLine: {
+    width: 16,
+    height: 2,
+    borderRadius: 999,
+    backgroundColor: "#5b35dc",
   },
   mobileBellBtn: {
     width: 38,
@@ -3252,7 +3450,45 @@ const styles = StyleSheet.create({
     padding: 10,
     gap: 8,
   },
-  webBrandWrap: {
+  webSidebarMobileDrawer: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 276,
+    borderTopLeftRadius: 0,
+    borderBottomLeftRadius: 0,
+    borderTopRightRadius: 22,
+    borderBottomRightRadius: 22,
+    paddingTop: 14,
+    zIndex: 50,
+    elevation: 18,
+    shadowColor: "#1b1748",
+    shadowOpacity: 0.32,
+    shadowRadius: 20,
+    shadowOffset: { width: 5, height: 0 },
+  },
+  webBrandWrapMobile: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  mobileSidebarCloseBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.16)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.24)",
+  },
+  mobileSidebarCloseText: {
+    color: "#ffffff",
+    fontSize: 18,
+    fontWeight: "900",
+    lineHeight: 20,
+  },  webBrandWrap: {
     paddingBottom: 6,
     borderBottomWidth: 1,
     borderBottomColor: "#7c6bff",
@@ -3942,6 +4178,10 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
     flexDirection: "column",
   },
+  notificationUnreadRow: {
+    borderColor: "#ffd54a",
+    backgroundColor: "#fff8d7",
+  },
   rowContent: {
     flex: 1,
     width: "100%",
@@ -4111,7 +4351,17 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff1f7",
     borderColor: "#ffc9df",
   },
-  mobileGoalArt: {
+  mobileBudgetRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.72)",
+    borderWidth: 1,
+    borderColor: "rgba(255,213,74,0.55)",
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },  mobileGoalArt: {
     width: 72,
     height: 72,
     borderRadius: 16,
@@ -4293,6 +4543,23 @@ const styles = StyleSheet.create({
     opacity: 0.55,
   },
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
