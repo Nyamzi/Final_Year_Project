@@ -33,13 +33,24 @@ export function LoginScreen({ onLoginSuccess, onGoToRegister }: LoginScreenProps
     onLoginSuccess({ email: data.email ?? nextEmail, role: data.role, fullName: data.fullName ?? null, phoneNumber: data.phoneNumber ?? null, nin: data.nin ?? null, profileImageUrl: data.profileImageUrl ?? null });
   }
 
-  async function handleLogin() {
+  async function handlePasswordLogin() {
+    const nextEmail = email.trim().toLowerCase();
     setLoading(true);
     setError("");
 
     try {
-      const data = await apiLogin({ email, password });
-      await completeLogin(data, email);
+      if (!/^\S+@\S+\.\S+$/.test(nextEmail)) {
+        setError("Enter a valid email address.");
+        return;
+      }
+
+      if (password.length < 8) {
+        setError("Enter your password.");
+        return;
+      }
+
+      const data = await apiLogin({ email: nextEmail, password });
+      await completeLogin(data, nextEmail);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unable to sign in";
       setError(message);
@@ -71,13 +82,14 @@ export function LoginScreen({ onLoginSuccess, onGoToRegister }: LoginScreenProps
 
       <View style={styles.formWrap}>
         <Text style={styles.heading}>Welcome back!</Text>
-        <Text style={styles.copy}>Sign in to continue</Text>
+        <Text style={styles.copy}>Sign in with your email and password</Text>
 
         <AppInput
           label="Email Address"
           value={email}
           placeholder="Enter your email"
           keyboardType="email-address"
+          autoCapitalize="none"
           onChangeText={setEmail}
         />
         <AppInput
@@ -90,7 +102,7 @@ export function LoginScreen({ onLoginSuccess, onGoToRegister }: LoginScreenProps
 
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
-        <AppButton title={loading ? "Signing in..." : "Sign In"} loading={loading} onPress={handleLogin} />
+        <AppButton title={loading ? "Signing in..." : "Sign In"} loading={loading} onPress={handlePasswordLogin} />
 
         <View style={styles.dividerRow}>
           <View style={styles.dividerLine} />
@@ -228,5 +240,4 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 });
-
 

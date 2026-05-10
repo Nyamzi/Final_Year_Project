@@ -67,7 +67,28 @@ export function RegisterScreen({ onGoToLogin, onRegistered }: RegisterScreenProp
     setError("");
     setMessage("");
 
+    const fullNameValue = fullName.trim();
+    const ninValue = nin.trim().toUpperCase();
+    const phoneNumberValue = phoneNumber.replace(/[\s-]/g, "").trim();
+    const emailValue = email.trim().toLowerCase();
+
     try {
+      if (fullNameValue.length < 3) {
+        setError("Full name must be at least 3 characters.");
+        return;
+      }
+      if (!/^[A-Za-z0-9]{8,20}$/.test(ninValue)) {
+        setError("NIN must be 8 to 20 letters or numbers.");
+        return;
+      }
+      if (!/^\+?[0-9]{10,15}$/.test(phoneNumberValue)) {
+        setError("Phone number must be 10 to 15 digits and may start with +.");
+        return;
+      }
+      if (!/^\S+@\S+\.\S+$/.test(emailValue)) {
+        setError("Enter a valid email address.");
+        return;
+      }
       if (!profileImageUrl) {
         setError("Choose a profile picture.");
         return;
@@ -76,12 +97,20 @@ export function RegisterScreen({ onGoToLogin, onRegistered }: RegisterScreenProp
         setError("Select male or female.");
         return;
       }
+      if (password.length < 8) {
+        setError("Password must be at least 8 characters.");
+        return;
+      }
+      if (password !== confirmPassword) {
+        setError("Passwords do not match.");
+        return;
+      }
 
       await apiRegister({
-        fullName,
-        nin: nin.toUpperCase(),
-        phoneNumber,
-        email,
+        fullName: fullNameValue,
+        nin: ninValue,
+        phoneNumber: phoneNumberValue,
+        email: emailValue,
         sex,
         profileImageUrl,
         password,
@@ -281,3 +310,4 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 });
+

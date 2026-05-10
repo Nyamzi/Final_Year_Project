@@ -40,7 +40,7 @@ const updateAllowanceSchema = allowanceSchema;
 const spendingLimitSchema = z.object({
   childId: z.string().min(1),
   monthlyLimit: z.number().positive(),
-  periodType: z.enum(["weekly", "monthly", "quarterly"]),
+  periodType: z.enum(["daily", "weekly", "monthly"]),
 });
 
 const profileSchema = z.object({
@@ -151,6 +151,31 @@ function getFromDateForRange(range: ParentReportRange): Date | null {
   if (range === "all_time") return null;
   if (range === "last_30_days") return new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
   return new Date(now.getFullYear(), now.getMonth(), 1);
+}
+
+function getBudgetPeriodStart(date: Date, periodType: BudgetPeriod): Date {
+  const start = new Date(date);
+  start.setHours(0, 0, 0, 0);
+
+  if (periodType === "daily") {
+    return start;
+  }
+
+  if (periodType === "weekly") {
+    const day = start.getDay();
+    const diffToMonday = day === 0 ? 6 : day - 1;
+    start.setDate(start.getDate() - diffToMonday);
+    return start;
+  }
+
+  if (periodType === "quarterly") {
+    const quarterStartMonth = Math.floor(start.getMonth() / 3) * 3;
+    start.setMonth(quarterStartMonth, 1);
+    return start;
+  }
+
+  start.setDate(1);
+  return start;
 }
 
 function escapeCsvValue(value: string | number | boolean | null | undefined): string {
@@ -490,6 +515,45 @@ router.post("/transactions/:id/decision", authMiddleware, requireRole("parent"),
     }
 
     const decision = parsed.data.decision as TransactionStatus;
+
+    if (decision === TransactionStatus.approved && transaction.type === TransactionType.spend) {
+      const activeBudget = await prisma.budget.findFirst({
+        where: { childId: transaction.childId, isActive: true },
+        orderBy: { createdAt: "desc" },
+      });
+
+      if (activeBudget) {
+        const activeLimit = Number(activeBudget.monthlyLimit);
+        const periodStart = getBudgetPeriodStart(new Date(), activeBudget.periodType);
+        const periodSpentAggregate = await prisma.transaction.aggregate({
+          _sum: { amount: true },
+          where: {
+            childId: transaction.childId,
+            type: TransactionType.spend,
+            status: TransactionStatus.approved,
+            createdAt: { gte: periodStart },
+          },
+        });
+        const spentThisPeriod = Number(periodSpentAggregate._sum.amount ?? 0);
+        const remaining = Math.max(0, activeLimit - spentThisPeriod);
+
+        if (Number(transaction.amount) > remaining) {
+          await prisma.transaction.update({
+            where: { id: transaction.id },
+            data: {
+              status: TransactionStatus.rejected,
+              approvedById: req.user!.userId,
+              reviewedAt: new Date(),
+              description: `${transaction.description ?? "Withdrawal request"} (spending limit reached)`,
+            },
+          });
+
+          return res.json({
+            message: `Spending limit reached. Withdrawal request rejected. Remaining ${activeBudget.periodType} amount: UGX ${Math.round(remaining).toLocaleString()}`,
+          });
+        }
+      }
+    }
 
     const updated = await prisma.$transaction(async (tx) => {
       const updatedTx = await tx.transaction.update({
@@ -1621,7 +1685,9 @@ router.get("/notifications", authMiddleware, requireRole("parent"), async (req: 
             tx.status === TransactionStatus.approved &&
             (tx.description ?? "").toLowerCase().includes("chore reward")
               ? `${tx.child.nickname} completed a chore and received UGX ${Number(tx.amount).toLocaleString()}`
-              : `${tx.child.nickname} transaction ${tx.status}: ${tx.type} ${Number(tx.amount).toLocaleString()}`,
+              : (tx.description ?? "").toLowerCase().includes("spending limit reached")
+                ? `${tx.child.nickname} hit their spending limit. Withdrawal of UGX ${Number(tx.amount).toLocaleString()} was blocked.`
+                : `${tx.child.nickname} transaction ${tx.status}: ${tx.type} ${Number(tx.amount).toLocaleString()}`,
           createdAt: tx.updatedAt,
         })),
       ...recentAllowances.map((a) => ({
@@ -2524,5 +2590,8 @@ router.post("/support-tickets", authMiddleware, requireRole("parent"), async (re
 });
 
 export default router;
+
+
+
 
 

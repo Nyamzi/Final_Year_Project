@@ -4,8 +4,10 @@ import {
   Easing,
   Image,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
+  StatusBar,
   StyleSheet,
   Text,
   useWindowDimensions,
@@ -239,6 +241,8 @@ function getPasswordStrength(password: string) {
 export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profileImageUrl, onLogout }: ParentDashboardScreenProps) {
   const { width } = useWindowDimensions();
   const isMobile = width < 900;
+  const mobileTopInset = isMobile && Platform.OS === "android" ? StatusBar.currentHeight ?? 24 : 0;
+  const mobileBottomInset = isMobile ? (Platform.OS === "android" ? 44 : 28) : 0;
 
   const [tab, setTab] = useState<Tab>("home");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -280,7 +284,7 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
 
   const [selectedChildId, setSelectedChildId] = useState("");
   const [limitAmount, setLimitAmount] = useState("");
-  const [limitPeriodType, setLimitPeriodType] = useState<"weekly" | "monthly" | "quarterly">("monthly");
+  const [limitPeriodType, setLimitPeriodType] = useState<"daily" | "weekly" | "monthly">("monthly");
   const [showLimitForm, setShowLimitForm] = useState(false);
 
   const [choreTitle, setChoreTitle] = useState("");
@@ -323,6 +327,7 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
   const [allChildGoals, setAllChildGoals] = useState<Array<ParentSavingsGoalSummary & { childId: string; childName: string }>>([]);
   const [goalViewChildId, setGoalViewChildId] = useState("all");
   const [allTransactions, setAllTransactions] = useState<ParentTransactionSummary[]>([]);
+  const [mobileTransactionsView, setMobileTransactionsView] = useState<"all" | "withdrawals">("all");
   const [lessons, setLessons] = useState<AdminLesson[]>([]);
   const [learningAssignments, setLearningAssignments] = useState<ParentLearningAssignment[]>([]);
 
@@ -336,6 +341,7 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
   const [fundAmount, setFundAmount] = useState("");
   const [fundDescription, setFundDescription] = useState("");
   const [showFundForm, setShowFundForm] = useState(false);
+  const [fundFormLockedChildId, setFundFormLockedChildId] = useState<string | null>(null);
   const [depositAmount, setDepositAmount] = useState("");
   const [showDepositForm, setShowDepositForm] = useState(false);
   const [parentAccount, setParentAccount] = useState<ParentAccountBalance>({
@@ -424,40 +430,20 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
     setNotifyGoals(preferences.notifyGoals);
   }
 
-  async function loadParentData() {
-    setLoading(true);
-    setError("");
-
+  async function loadParentMoneyData(showError = false) {
     try {
-      const [childrenData, pendingData, choresData, allowancesData, transactionsData, lessonsData, learningAssignmentsData, preferencesData, reportsData, supportData, notificationsData, parentAccountData] = await Promise.all([
+      const [childrenData, pendingData, transactionsData, parentAccountData] = await Promise.all([
         apiParentChildren(),
         apiParentPendingTransactions(),
-        apiParentChores(),
-        apiParentAllowances(),
         apiParentAllTransactions(),
-        apiParentPublishedLessons().catch(() => ({ lessons: [] as AdminLesson[] })),
-        apiParentLearningAssignments().catch(() => ({ assignments: [] as ParentLearningAssignment[] })),
-        apiParentPreferences(),
-        apiParentReportSummary("this_month"),
-        apiParentSupportTickets(),
-        apiParentNotifications(),
         apiParentAccountBalance(),
       ]);
 
       setChildren(childrenData.children);
       setPending(pendingData.pending);
-      setChores(choresData.chores);
-      setAllowances(allowancesData.allowances);
       setAllTransactions(transactionsData.transactions);
-      setLessons(lessonsData.lessons);
-      setLearningAssignments(learningAssignmentsData.assignments);
-      await loadAllGoalsForChildren(childrenData.children);
-      applyPreferences(preferencesData.preferences);
-      setReportSummary(normalizeReportSummary(reportsData.summary));
-      setSupportTickets(supportData.tickets);
-      setNotifications(notificationsData.notifications);
-      setUnreadNotificationCount(notificationsData.unreadCount ?? notificationsData.notifications.filter((item) => !item.isRead).length);
       setParentAccount(parentAccountData);
+      await loadAllGoalsForChildren(childrenData.children);
 
       if (childrenData.children.length > 0) {
         if (!selectedChildId) setSelectedChildId(childrenData.children[0].id);
@@ -466,7 +452,43 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
         if (!passwordChildId) setPasswordChildId(childrenData.children[0].id);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load parent dashboard.");
+      if (showError) setError(err instanceof Error ? err.message : "Failed to refresh parent money data.");
+    }
+  }
+
+  async function loadParentSupplementalData() {
+    const [choresData, allowancesData, lessonsData, learningAssignmentsData, preferencesData, reportsData, supportData, notificationsData] = await Promise.all([
+      apiParentChores(),
+      apiParentAllowances(),
+      apiParentPublishedLessons().catch(() => ({ lessons: [] as AdminLesson[] })),
+      apiParentLearningAssignments().catch(() => ({ assignments: [] as ParentLearningAssignment[] })),
+      apiParentPreferences(),
+      apiParentReportSummary("this_month"),
+      apiParentSupportTickets(),
+      apiParentNotifications(),
+    ]);
+
+    setChores(choresData.chores);
+    setAllowances(allowancesData.allowances);
+    setLessons(lessonsData.lessons);
+    setLearningAssignments(learningAssignmentsData.assignments);
+    applyPreferences(preferencesData.preferences);
+    setReportSummary(normalizeReportSummary(reportsData.summary));
+    setSupportTickets(supportData.tickets);
+    setNotifications(notificationsData.notifications);
+    setUnreadNotificationCount(notificationsData.unreadCount ?? notificationsData.notifications.filter((item) => !item.isRead).length);
+  }
+
+  async function loadParentData(showLoading = true) {
+    if (showLoading) setLoading(true);
+    if (showLoading) setError("");
+
+    try {
+      await loadParentMoneyData(showLoading);
+      setLoading(false);
+      await loadParentSupplementalData();
+    } catch (err) {
+      if (showLoading) setError(err instanceof Error ? err.message : "Failed to load parent dashboard.");
     } finally {
       setLoading(false);
     }
@@ -474,6 +496,10 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
 
   useEffect(() => {
     loadParentData();
+    const refreshTimer = setInterval(() => {
+      void loadParentData(false);
+    }, 10000);
+    return () => clearInterval(refreshTimer);
   }, []);
 
   useEffect(() => {
@@ -708,7 +734,7 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
     try {
       const data = await apiParentTransactionDecision(id, decision);
       setStatus(data.message);
-      await loadParentData();
+      await loadParentMoneyData(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Decision failed.");
     } finally {
@@ -947,8 +973,8 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
       setStatus(data.message);
       setFundAmount("");
       setFundDescription("");
-      setShowFundForm(false);
-      await loadParentData();
+      closeFundWalletForm();
+      await loadParentMoneyData(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not fund child account.");
     } finally {
@@ -1076,12 +1102,21 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
     setStatus(`Open this link: ${fullUrl}`);
   }
 
+  function openWithdrawRequestsPage() {
+    setMobileTransactionsView("withdrawals");
+    handleTabPress("transactions");
+  }
+
+  function openTransactionsPage() {
+    setMobileTransactionsView("all");
+    handleTabPress("transactions");
+  }
+
   function handleTabPress(nextTab: Tab) {
     void apiLogDashboardAction({ dashboard: "parent", action: `Open tab: ${nextTab}` }).catch(() => undefined);
     setTab(nextTab);
     if (nextTab !== "children") {
       setShowCreateChildForm(false);
-      setShowFundForm(false);
     }
     if (nextTab !== "home") {
       setShowDepositForm(false);
@@ -1147,6 +1182,22 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
     handleTabPress("limits");
   }
 
+  function openFundWalletForm(childId?: string, navigateToChildren = false) {
+    const nextChildId = childId ?? fundChildId ?? children[0]?.id ?? "";
+    setFundChildId(nextChildId);
+    setFundFormLockedChildId(childId ?? null);
+    setFundChildDropdownOpen(false);
+    setShowDepositForm(false);
+    setShowFundForm(true);
+    if (navigateToChildren) handleTabPress("children");
+  }
+
+  function closeFundWalletForm() {
+    setShowFundForm(false);
+    setFundFormLockedChildId(null);
+    setFundChildDropdownOpen(false);
+  }
+
   const activeTabLabel = navItems.find((item) => item.key === tab)?.label ?? "Dashboard";
   const notificationBadgeCount = Math.min(9, unreadNotificationCount);
   const openSupportCount = Math.min(9, supportTickets.filter((ticket) => ticket.status === "open").length);
@@ -1163,6 +1214,8 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
           0
         ) / allChildGoals.length
       );
+  const pendingWithdrawalRequests = pending.filter((tx) => tx.type === "spend");
+  const pendingWithdrawalCount = pendingWithdrawalRequests.length;
   const approvedTransactions = allTransactions.filter((tx) => tx.status === "approved");
   const totalDeposits = approvedTransactions.filter((tx) => tx.type === "earn").reduce((sum, tx) => sum + tx.amount, 0);
   const totalWithdrawals = approvedTransactions.filter((tx) => tx.type === "spend").reduce((sum, tx) => sum + tx.amount, 0);
@@ -1425,7 +1478,8 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
   }
 
   return (
-    <View style={[styles.container, isMobile && styles.containerMobile]}>
+    <View style={[styles.container, isMobile && styles.containerMobile, isMobile ? { paddingTop: mobileTopInset } : null]}>
+
       {isMobile ? (
         <Animated.View
           pointerEvents={isSidebarOpen ? "auto" : "none"}
@@ -1504,7 +1558,15 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
       </Animated.View>
 
       {/* ── Main Content ── */}
-      <ScrollView style={styles.main} contentContainerStyle={[styles.mainInner, isMobile && styles.mainInnerMobile]}>
+      <ScrollView
+        style={styles.main}
+        contentContainerStyle={[
+          styles.mainInner,
+          isMobile && styles.mainInnerMobile,
+          isMobile ? { paddingBottom: 124 + mobileBottomInset } : null,
+        ]}
+        showsVerticalScrollIndicator={false}
+      >
         {isMobile && tab !== "home" ? (
           <View style={styles.mobileMenuBar}>
             <Pressable style={styles.mobileMenuButton} onPress={() => setIsSidebarOpen(true)}>
@@ -1529,7 +1591,7 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
               <Pressable style={styles.mobileCircleBtn}>
                 <Text style={styles.mobileCircleBtnIcon}>🔔</Text>
               </Pressable>
-              <Pressable style={styles.mobileCircleBtn} onPress={() => handleTabPress("transactions")}>
+              <Pressable style={styles.mobileCircleBtn} onPress={() => openTransactionsPage()}>
                 <Text style={styles.mobileCircleBtnIcon}>⌕</Text>
               </Pressable>
               <Pressable style={styles.mobileCircleBtn} onPress={() => setIsSidebarOpen(true)}>
@@ -1569,19 +1631,18 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
                     <Text style={styles.mobileQuickActionLabel}>Add Child</Text>
                   </Pressable>
                   <Pressable
-                    style={styles.mobileQuickActionBtn}
-                    onPress={() => {
-                      if (children.length > 0) {
-                        setFundChildId((prev) => prev || children[0].id);
-                      }
-                      setShowFundForm(true);
-                      handleTabPress("children");
-                    }}
+                    style={[styles.mobileQuickActionBtn, pendingWithdrawalCount > 0 && styles.mobileQuickActionAlert]}
+                    onPress={() => openWithdrawRequestsPage()}
                   >
-                    <View style={styles.mobileQuickActionIconWrap}>
-                      <Text style={styles.mobileQuickActionIcon}>⌁</Text>
+                    {pendingWithdrawalCount > 0 ? (
+                      <View style={styles.mobileQuickActionBadge}>
+                        <Text style={styles.mobileQuickActionBadgeText}>{pendingWithdrawalCount}</Text>
+                      </View>
+                    ) : null}
+                    <View style={[styles.mobileQuickActionIconWrap, pendingWithdrawalCount > 0 && styles.mobileQuickActionIconWrapAlert]}>
+                      <Text style={styles.mobileQuickActionIcon}>UGX</Text>
                     </View>
-                    <Text style={styles.mobileQuickActionLabel}>Fund</Text>
+                    <Text style={styles.mobileQuickActionLabel}>Withdraw Requests</Text>
                   </Pressable>
                   <Pressable style={styles.mobileQuickActionBtn} onPress={handleOpenCreateGoal}>
                     <View style={styles.mobileQuickActionIconWrap}>
@@ -1596,6 +1657,20 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
                     <Text style={styles.mobileQuickActionLabel}>Deposit</Text>
                   </Pressable>
                 </View>
+                {pendingWithdrawalCount > 0 ? (
+                  <Pressable style={styles.mobileWithdrawalAlertCard} onPress={() => openWithdrawRequestsPage()}>
+                    <View style={styles.mobileWithdrawalAlertIconWrap}>
+                      <Text style={styles.mobileWithdrawalAlertIcon}>UGX</Text>
+                    </View>
+                    <View style={styles.mobileWithdrawalAlertTextWrap}>
+                      <Text style={styles.mobileWithdrawalAlertTitle}>Withdraw request waiting</Text>
+                      <Text style={styles.mobileWithdrawalAlertText}>
+                        {pendingWithdrawalCount} child {pendingWithdrawalCount === 1 ? "request needs" : "requests need"} your approval.
+                      </Text>
+                    </View>
+                    <Text style={styles.mobileWithdrawalAlertLink}>Review</Text>
+                  </Pressable>
+                ) : null}
                 {showDepositForm ? (
                   <View style={[styles.formCard, styles.mobileSurfaceCard]}>
                     <Text style={styles.formCardTitle}>Deposit to Parent Account</Text>
@@ -1606,7 +1681,7 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
 
                 <View style={styles.mobileLatestHeader}>
                   <Text style={styles.mobileLatestTitle}>Latest Transactions</Text>
-                  <Pressable onPress={() => handleTabPress("transactions")}>
+                  <Pressable onPress={() => openTransactionsPage()}>
                     <Text style={styles.mobileLatestLink}>View All</Text>
                   </Pressable>
                 </View>
@@ -1616,7 +1691,7 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
                     <Text style={styles.activityEmpty}>No transactions yet.</Text>
                   ) : (
                     allTransactions.slice(0, 5).map((item) => (
-                      <Pressable key={item.id} style={styles.mobileDeviceRow} onPress={() => handleTabPress("transactions")}>
+                      <Pressable key={item.id} style={styles.mobileDeviceRow} onPress={() => openTransactionsPage()}>
                         <View style={styles.mobileDeviceIcon}><Text style={styles.mobileDeviceIconText}>{item.type === "earn" ? "↗" : "↘"}</Text></View>
                         <View style={styles.mobileDeviceInfo}>
                           <Text style={styles.mobileDeviceTitle}>{item.description ?? `${item.type === "earn" ? "Credit" : "Spend"} Transaction`}</Text>
@@ -1647,10 +1722,7 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
                   </Pressable>
                   <Pressable
                     style={styles.desktopActionButton}
-                    onPress={() => {
-                      setShowFundForm(true);
-                      handleTabPress("children");
-                    }}
+                    onPress={() => openFundWalletForm()}
                   >
                     <View style={styles.desktopActionIconWrap}><Text style={styles.desktopActionIcon}>💳</Text></View>
                     <Text style={styles.desktopActionText}>Fund Wallet</Text>
@@ -1736,11 +1808,7 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
                               </Pressable>
                               <Pressable
                                 style={[styles.desktopSmallBtn, styles.desktopSmallBtnPrimary]}
-                                onPress={() => {
-                                  setFundChildId(child.id);
-                                  setShowFundForm(true);
-                                  handleTabPress("children");
-                                }}
+                                onPress={() => openFundWalletForm(child.id)}
                               >
                                 <Text style={[styles.desktopSmallBtnText, styles.desktopSmallBtnPrimaryText]}>Fund Wallet</Text>
                               </Pressable>
@@ -1755,7 +1823,7 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
                   <View style={styles.desktopPanel}>
                     <View style={styles.desktopPanelHeader}>
                       <Text style={styles.sectionTitle}>Pending Approvals</Text>
-                      <Pressable onPress={() => handleTabPress("transactions")}>
+                      <Pressable onPress={() => openTransactionsPage()}>
                         <Text style={styles.desktopPanelLink}>View all</Text>
                       </Pressable>
                     </View>
@@ -1785,7 +1853,7 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
                   <View style={styles.desktopPanel}>
                     <View style={styles.desktopPanelHeader}>
                       <Text style={styles.sectionTitle}>Recent Transactions</Text>
-                      <Pressable onPress={() => handleTabPress("transactions")}>
+                      <Pressable onPress={() => openTransactionsPage()}>
                         <Text style={styles.desktopPanelLink}>View all</Text>
                       </Pressable>
                     </View>
@@ -1841,7 +1909,7 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
                     <View style={styles.childrenSearchPill}>
                       <Text style={styles.childrenSearchText}>Search children...</Text>
                     </View>
-                    <Pressable style={styles.childrenTopBtn} onPress={() => setShowFundForm(true)}>
+                    <Pressable style={styles.childrenTopBtn} onPress={() => openFundWalletForm()}>
                       <Text style={styles.childrenTopBtnText}>Fund Wallet</Text>
                     </Pressable>
                     <Pressable style={styles.childrenTopBtn} onPress={() => handleTabPress("limits")}>
@@ -1859,9 +1927,9 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
                       {children.map((child) => {
                         const goalCount = savingsGoals.filter((g) => g.status === "active").length;
                         const pendingCount = pending.filter((p) => p.childId === child.id).length;
-                        const weeklyLimit = child.activeSpendingLimit ?? 0;
+                        const spendingLimit = child.activeSpendingLimit ?? 0;
                         const balance = child.wallet?.balance ?? 0;
-                        const progress = weeklyLimit > 0 ? Math.min(100, Math.round((balance / weeklyLimit) * 100)) : 0;
+                        const progress = spendingLimit > 0 ? Math.min(100, Math.round((balance / spendingLimit) * 100)) : 0;
 
                         return (
                           <View key={child.id} style={styles.childrenCardV2}>
@@ -1888,8 +1956,8 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
                             </View>
                             <View style={styles.childrenMiniStats}>
                               <View style={styles.childrenMiniStat}>
-                                <Text style={styles.childrenMiniStatLabel}>Weekly Limit</Text>
-                                <Text style={styles.childrenMiniStatValue}>{formatMoney(weeklyLimit)}</Text>
+                                <Text style={styles.childrenMiniStatLabel}>{`${(child.activeSpendingLimitPeriod ?? "monthly").charAt(0).toUpperCase()}${(child.activeSpendingLimitPeriod ?? "monthly").slice(1)} Limit`}</Text>
+                                <Text style={styles.childrenMiniStatValue}>{formatMoney(spendingLimit)}</Text>
                               </View>
                               <View style={styles.childrenMiniStat}>
                                 <Text style={styles.childrenMiniStatLabel}>Pending</Text>
@@ -1906,10 +1974,7 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
                               </Pressable>
                               <Pressable
                                 style={[styles.desktopSmallBtn, styles.desktopSmallBtnPrimary]}
-                                onPress={() => {
-                                  setFundChildId(child.id);
-                                  setShowFundForm(true);
-                                }}
+                                onPress={() => openFundWalletForm(child.id)}
                               >
                                 <Text style={[styles.desktopSmallBtnText, styles.desktopSmallBtnPrimaryText]}>Fund Wallet</Text>
                               </Pressable>
@@ -1924,7 +1989,7 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
                       <View style={styles.desktopPanel}>
                         <View style={styles.desktopPanelHeader}>
                           <Text style={styles.sectionTitle}>Recent Activity</Text>
-                          <Pressable onPress={() => handleTabPress("transactions")}>
+                          <Pressable onPress={() => openTransactionsPage()}>
                             <Text style={styles.desktopPanelLink}>View all</Text>
                           </Pressable>
                         </View>
@@ -1942,7 +2007,7 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
                       <View style={styles.desktopPanel}>
                         <View style={styles.desktopPanelHeader}>
                           <Text style={styles.sectionTitle}>Pending Approvals</Text>
-                          <Pressable onPress={() => handleTabPress("transactions")}>
+                          <Pressable onPress={() => openTransactionsPage()}>
                             <Text style={styles.desktopPanelLink}>View all</Text>
                           </Pressable>
                         </View>
@@ -1994,7 +2059,7 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
             ) : (
               <>
                 <View style={[styles.childrenTopActions, styles.mobileChildrenActions]}>
-                  <Pressable style={styles.childrenTopBtn} onPress={() => setShowFundForm(true)}>
+                  <Pressable style={styles.childrenTopBtn} onPress={() => openFundWalletForm()}>
                     <Text style={styles.childrenTopBtnText}>Fund Wallet</Text>
                   </Pressable>
                   <Pressable style={[styles.childrenTopBtn, styles.childrenTopBtnPrimary]} onPress={() => setShowCreateChildForm(true)}>
@@ -2028,6 +2093,12 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
                           {child.activeSpendingLimit ? formatMoney(child.activeSpendingLimit) : "Not set"}
                         </Text>
                       </View>
+                      <Pressable
+                        style={[styles.desktopSmallBtn, styles.desktopSmallBtnPrimary]}
+                        onPress={() => openFundWalletForm(child.id)}
+                      >
+                        <Text style={[styles.desktopSmallBtnText, styles.desktopSmallBtnPrimaryText]}>Fund Wallet</Text>
+                      </Pressable>
                     </View>
                   </View>
                 ))}
@@ -2081,45 +2152,51 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
                     <Text style={styles.formCardTitle}>Fund Child Account</Text>
                     <Pressable
                       style={styles.modalCloseBtn}
-                      onPress={() => {
-                        setShowFundForm(false);
-                        setFundChildDropdownOpen(false);
-                      }}
+                      onPress={closeFundWalletForm}
                     >
                       <Text style={styles.modalCloseText}>Close</Text>
                     </Pressable>
                   </View>
-                  <View style={styles.dropdownWrap}>
-                    <Text style={styles.childSelectorLabel}>Select Child</Text>
-                    <Pressable style={styles.dropdownButton} onPress={() => setFundChildDropdownOpen((p) => !p)}>
-                      <Text style={styles.dropdownButtonText}>
-                        {children.find((c) => c.id === fundChildId)?.nickname ?? "Choose a child"}
-                      </Text>
-                      <Text style={styles.dropdownChevron}>{fundChildDropdownOpen ? "^" : "v"}</Text>
-                    </Pressable>
-                    {fundChildDropdownOpen ? (
-                      <View style={styles.dropdownMenu}>
-                        {children.length === 0 ? (
-                          <Text style={styles.dropdownEmptyText}>No children found.</Text>
-                        ) : (
-                          children.map((child) => (
-                            <Pressable
-                              key={child.id}
-                              style={styles.dropdownItem}
-                              onPress={() => {
-                                setFundChildId(child.id);
-                                setFundChildDropdownOpen(false);
-                              }}
-                            >
-                              <Text style={styles.dropdownItemText}>{child.nickname}</Text>
-                            </Pressable>
-                          ))
-                        )}
+                  {fundFormLockedChildId ? (
+                    <View style={styles.dropdownWrap}>
+                      <Text style={styles.childSelectorLabel}>Child</Text>
+                      <View style={styles.dropdownButton}>
+                        <Text style={styles.dropdownButtonText}>{children.find((c) => c.id === fundChildId)?.nickname ?? "Selected child"}</Text>
                       </View>
-                    ) : null}
-                  </View>
+                    </View>
+                  ) : (
+                    <View style={styles.dropdownWrap}>
+                      <Text style={styles.childSelectorLabel}>Select Child</Text>
+                      <Pressable style={styles.dropdownButton} onPress={() => setFundChildDropdownOpen((p) => !p)}>
+                        <Text style={styles.dropdownButtonText}>
+                          {children.find((c) => c.id === fundChildId)?.nickname ?? "Choose a child"}
+                        </Text>
+                        <Text style={styles.dropdownChevron}>{fundChildDropdownOpen ? "^" : "v"}</Text>
+                      </Pressable>
+                      {fundChildDropdownOpen ? (
+                        <View style={styles.dropdownMenu}>
+                          {children.length === 0 ? (
+                            <Text style={styles.dropdownEmptyText}>No children found.</Text>
+                          ) : (
+                            children.map((child) => (
+                              <Pressable
+                                key={child.id}
+                                style={styles.dropdownItem}
+                                onPress={() => {
+                                  setFundChildId(child.id);
+                                  setFundChildDropdownOpen(false);
+                                }}
+                              >
+                                <Text style={styles.dropdownItemText}>{child.nickname}</Text>
+                              </Pressable>
+                            ))
+                          )}
+                        </View>
+                      ) : null}
+                    </View>
+                  )}
                   <AppInput label="Amount (UGX)" value={fundAmount} onChangeText={setFundAmount} keyboardType="numeric" />
-                  <AppInput label="Description (optional)" value={fundDescription} onChangeText={setFundDescription} />
+                  <AppInput label="Reason" value={fundDescription} onChangeText={setFundDescription} />
                   <AppButton title="Send Funds" loading={submitting} onPress={handleFundChild} />
                 </View>
               </View>
@@ -2427,52 +2504,93 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
               <>
                 <View style={styles.goalsTopBar}>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.pageTitle}>Transactions</Text>
-                    <Text style={styles.childrenSubtitle}>Parent wallet and children&apos;s wallets.</Text>
+                    <Text style={styles.pageTitle}>{mobileTransactionsView === "withdrawals" ? "Withdraw Requests" : "Transactions"}</Text>
+                    <Text style={styles.childrenSubtitle}>
+                      {mobileTransactionsView === "withdrawals" ? "Review child withdrawal requests and approve or reject them." : "Parent wallet and children&apos;s wallets."}
+                    </Text>
                   </View>
-                  <Pressable
-                    style={[styles.childrenTopBtn, styles.childrenTopBtnPrimary]}
-                    onPress={() => {
-                      setPdfExportChildDropdownOpen(false);
-                      setPdfExportTypeDropdownOpen(false);
-                      setPdfExportStatusDropdownOpen(false);
-                      setPdfExportColumnsDropdownOpen(false);
-                      setShowTransactionPdfModal(true);
-                    }}
-                  >
-                    <Text style={[styles.childrenTopBtnText, styles.childrenTopBtnTextPrimary]}>Export PDF…</Text>
-                  </Pressable>
+                  {mobileTransactionsView === "all" ? (
+                    <Pressable
+                      style={[styles.childrenTopBtn, styles.childrenTopBtnPrimary]}
+                      onPress={() => {
+                        setPdfExportChildDropdownOpen(false);
+                        setPdfExportTypeDropdownOpen(false);
+                        setPdfExportStatusDropdownOpen(false);
+                        setPdfExportColumnsDropdownOpen(false);
+                        setShowTransactionPdfModal(true);
+                      }}
+                    >
+                      <Text style={[styles.childrenTopBtnText, styles.childrenTopBtnTextPrimary]}>Export PDF</Text>
+                    </Pressable>
+                  ) : (
+                    <Pressable style={styles.childrenTopBtn} onPress={openTransactionsPage}>
+                      <Text style={styles.childrenTopBtnText}>All Activity</Text>
+                    </Pressable>
+                  )}
                 </View>
-                {allTransactions.length === 0 ? (
-              <View style={[styles.activityCard, isMobile && styles.mobileSurfaceCard]}>
-                <Text style={styles.activityEmpty}>No transactions yet.</Text>
-              </View>
-            ) : (
-              <View style={[styles.formCard, isMobile && styles.mobileSurfaceCard]}>
-                {allTransactions.map((item, idx) => (
-                  <View key={item.id}
-                    style={[styles.txRow, isMobile && styles.txRowMobile, idx < allTransactions.length - 1 && styles.txRowBorder]}>
-                    <View style={[styles.txTypeBadge, item.type === "earn" ? styles.txEarnBadge : styles.txSpendBadge]}>
-                      <Text style={styles.txTypeBadgeText}>{item.type === "earn" ? "+" : "−"}</Text>
+
+                {mobileTransactionsView === "withdrawals" ? (
+                  pendingWithdrawalRequests.length === 0 ? (
+                    <View style={[styles.activityCard, isMobile && styles.mobileSurfaceCard]}>
+                      <Text style={styles.activityEmpty}>No withdrawal requests right now.</Text>
                     </View>
-                    <View style={styles.txInfo}>
-                      <Text style={styles.txMain}>
-                        {item.childName} · {formatMoney(item.amount)}
-                      </Text>
-                      <Text style={styles.txMeta}>{item.description ?? "No description"}</Text>
-                      <Text style={styles.txDate}>{new Date(item.createdAt).toLocaleDateString()}</Text>
+                  ) : (
+                    <View style={[styles.formCard, isMobile && styles.mobileSurfaceCard]}>
+                      {pendingWithdrawalRequests.map((item, idx) => (
+                        <View
+                          key={item.id}
+                          style={[styles.txRow, styles.txRowMobile, idx < pendingWithdrawalRequests.length - 1 && styles.txRowBorder]}
+                        >
+                          <View style={[styles.txTypeBadge, styles.txSpendBadge]}>
+                            <Text style={styles.txTypeBadgeText}>UGX</Text>
+                          </View>
+                          <View style={styles.txInfo}>
+                            <Text style={styles.txMain}>{item.childName} wants {formatMoney(item.amount)}</Text>
+                            <Text style={styles.txMeta}>{item.description ?? "Withdrawal request"}</Text>
+                            <Text style={styles.txDate}>{new Date(item.createdAt).toLocaleDateString()}</Text>
+                            <View style={[styles.pendingActions, styles.pendingActionsMobile]}>
+                              <Pressable style={[styles.decisionBtn, styles.approveBtn]} onPress={() => handleDecision(item.id, "approved")}>
+                                <Text style={styles.approveBtnText}>Approve</Text>
+                              </Pressable>
+                              <Pressable style={[styles.decisionBtn, styles.rejectBtn]} onPress={() => handleDecision(item.id, "rejected")}>
+                                <Text style={styles.rejectBtnText}>Reject</Text>
+                              </Pressable>
+                            </View>
+                          </View>
+                        </View>
+                      ))}
                     </View>
-                    <View style={[styles.txStatusPill,
-                      item.status === "approved" && styles.txApproved,
-                      item.status === "rejected" && styles.txRejected,
-                      item.status === "pending" && styles.txPending,
-                    ]}>
-                      <Text style={styles.txStatusText}>{item.status}</Text>
-                    </View>
+                  )
+                ) : allTransactions.length === 0 ? (
+                  <View style={[styles.activityCard, isMobile && styles.mobileSurfaceCard]}>
+                    <Text style={styles.activityEmpty}>No transactions yet.</Text>
                   </View>
-                ))}
-              </View>
-            )}
+                ) : (
+                  <View style={[styles.formCard, isMobile && styles.mobileSurfaceCard]}>
+                    {allTransactions.map((item, idx) => (
+                      <View key={item.id}
+                        style={[styles.txRow, isMobile && styles.txRowMobile, idx < allTransactions.length - 1 && styles.txRowBorder]}>
+                        <View style={[styles.txTypeBadge, item.type === "earn" ? styles.txEarnBadge : styles.txSpendBadge]}>
+                          <Text style={styles.txTypeBadgeText}>{item.type === "earn" ? "+" : "-"}</Text>
+                        </View>
+                        <View style={styles.txInfo}>
+                          <Text style={styles.txMain}>
+                            {item.childName} - {formatMoney(item.amount)}
+                          </Text>
+                          <Text style={styles.txMeta}>{item.description ?? "No description"}</Text>
+                          <Text style={styles.txDate}>{new Date(item.createdAt).toLocaleDateString()}</Text>
+                        </View>
+                        <View style={[styles.txStatusPill,
+                          item.status === "approved" && styles.txApproved,
+                          item.status === "rejected" && styles.txRejected,
+                          item.status === "pending" && styles.txPending,
+                        ]}>
+                          <Text style={styles.txStatusText}>{item.status}</Text>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                )}
               </>
             )}
           </View>
@@ -3079,7 +3197,8 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
                                   onPress={() => {
                                     setSelectedChildId(child.id);
                                     setLimitAmount(limit > 0 ? String(limit) : "");
-                                    if (child.activeSpendingLimitPeriod) setLimitPeriodType(child.activeSpendingLimitPeriod);
+                                    if (child.activeSpendingLimitPeriod && child.activeSpendingLimitPeriod !== "quarterly") setLimitPeriodType(child.activeSpendingLimitPeriod);
+                                    else setLimitPeriodType("monthly");
                                     setShowLimitForm(true);
                                   }}
                                 >
@@ -3116,8 +3235,31 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
               <>
                 <Text style={[styles.pageTitle, isMobile && styles.mobilePageTitle]}>Spending Limits</Text>
                 <View style={[styles.formCard, isMobile && styles.mobileSurfaceCard]}>
-                  <Text style={styles.formCardTitle}>Tap Set Limit to add or update a child limit.</Text>
+                  <Text style={styles.formCardTitle}>Set daily, weekly, or monthly withdrawal limits for each child.</Text>
+                  <AppButton title="Set Limit" onPress={() => handleOpenLimitForm()} />
                 </View>
+                {children.map((child) => (
+                  <View key={child.id} style={[styles.activityCard, styles.mobileSurfaceCard]}>
+                    <Text style={styles.listItemMain}>{child.nickname}</Text>
+                    <Text style={styles.listItemMeta}>
+                      {(child.activeSpendingLimitPeriod ?? "monthly").charAt(0).toUpperCase() +
+                        (child.activeSpendingLimitPeriod ?? "monthly").slice(1)}{" "}
+                      limit: {child.activeSpendingLimit ? formatMoney(child.activeSpendingLimit) : "Not set"}
+                    </Text>
+                    <Pressable
+                      style={[styles.desktopSmallBtn, styles.desktopSmallBtnPrimary]}
+                      onPress={() => {
+                        setSelectedChildId(child.id);
+                        setLimitAmount(child.activeSpendingLimit ? String(child.activeSpendingLimit) : "");
+                        if (child.activeSpendingLimitPeriod && child.activeSpendingLimitPeriod !== "quarterly") setLimitPeriodType(child.activeSpendingLimitPeriod);
+                        else setLimitPeriodType("monthly");
+                        setShowLimitForm(true);
+                      }}
+                    >
+                      <Text style={[styles.desktopSmallBtnText, styles.desktopSmallBtnPrimaryText]}>Edit Limit</Text>
+                    </Pressable>
+                  </View>
+                ))}
               </>
             )}
 
@@ -3167,7 +3309,7 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
                   </View>
                   <AppInput label="Limit Amount (UGX)" value={limitAmount} onChangeText={setLimitAmount} keyboardType="numeric" />
                   <View style={styles.toggleRowGroup}>
-                    {(["weekly", "monthly", "quarterly"] as const).map((period) => (
+                    {(["daily", "weekly", "monthly"] as const).map((period) => (
                       <Pressable
                         key={period}
                         style={[styles.chipBtn, limitPeriodType === period && styles.chipBtnActive]}
@@ -3330,7 +3472,7 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
                   <Pressable style={[styles.reportCardBtn, styles.reportCardBtnPrimary, styles.reportCardBtnFlex]} onPress={() => openReportPdfModal("pending")}>
                     <Text style={[styles.reportCardBtnText, styles.reportCardBtnTextPrimary]}>Download PDF</Text>
                   </Pressable>
-                  <Pressable style={[styles.reportCardBtn, styles.reportCardBtnFlex]} onPress={() => handleTabPress("transactions")}>
+                  <Pressable style={[styles.reportCardBtn, styles.reportCardBtnFlex]} onPress={() => openTransactionsPage()}>
                     <Text style={styles.reportCardBtnText}>Review</Text>
                   </Pressable>
                 </View>
@@ -3855,8 +3997,60 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
         </View>
       </Modal>
 
+      {showFundForm && tab !== "children" ? (
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, isMobile && styles.mobileSurfaceCard]}>
+            <View style={styles.modalHead}>
+              <Text style={styles.formCardTitle}>Fund Child Account</Text>
+              <Pressable style={styles.modalCloseBtn} onPress={closeFundWalletForm}>
+                <Text style={styles.modalCloseText}>Close</Text>
+              </Pressable>
+            </View>
+            {fundFormLockedChildId ? (
+              <View style={styles.dropdownWrap}>
+                <Text style={styles.childSelectorLabel}>Child</Text>
+                <View style={styles.dropdownButton}>
+                  <Text style={styles.dropdownButtonText}>{children.find((c) => c.id === fundChildId)?.nickname ?? "Selected child"}</Text>
+                </View>
+              </View>
+            ) : (
+              <View style={styles.dropdownWrap}>
+                <Text style={styles.childSelectorLabel}>Select Child</Text>
+                <Pressable style={styles.dropdownButton} onPress={() => setFundChildDropdownOpen((p) => !p)}>
+                  <Text style={styles.dropdownButtonText}>{children.find((c) => c.id === fundChildId)?.nickname ?? "Choose a child"}</Text>
+                  <Text style={styles.dropdownChevron}>{fundChildDropdownOpen ? "^" : "v"}</Text>
+                </Pressable>
+                {fundChildDropdownOpen ? (
+                  <View style={styles.dropdownMenu}>
+                    {children.length === 0 ? (
+                      <Text style={styles.dropdownEmptyText}>No children found.</Text>
+                    ) : (
+                      children.map((child) => (
+                        <Pressable
+                          key={child.id}
+                          style={styles.dropdownItem}
+                          onPress={() => {
+                            setFundChildId(child.id);
+                            setFundChildDropdownOpen(false);
+                          }}
+                        >
+                          <Text style={styles.dropdownItemText}>{child.nickname}</Text>
+                        </Pressable>
+                      ))
+                    )}
+                  </View>
+                ) : null}
+              </View>
+            )}
+            <AppInput label="Amount (UGX)" value={fundAmount} onChangeText={setFundAmount} keyboardType="numeric" />
+            <AppInput label="Reason" value={fundDescription} onChangeText={setFundDescription} />
+            <AppButton title="Send Funds" loading={submitting} onPress={handleFundChild} />
+          </View>
+        </View>
+      ) : null}
+
       {isMobile ? (
-        <View style={styles.mobileBottomNav}>
+        <View style={[styles.mobileBottomNav, { bottom: 10 + mobileBottomInset }]}>
           <Pressable style={[styles.mobileBottomItem, tab === "home" && styles.mobileBottomItemActive]} onPress={() => handleTabPress("home")}>
             <Text style={[styles.mobileBottomIcon, tab === "home" && styles.mobileBottomIconActive]}>⌂</Text>
             <Text style={[styles.mobileBottomLabel, tab === "home" && styles.mobileBottomLabelActive]}>Home</Text>
@@ -3869,7 +4063,7 @@ export function ParentDashboardScreen({ email, fullName, phoneNumber, nin, profi
             <Text style={[styles.mobileBottomIcon, tab === "goals" && styles.mobileBottomIconActive]}>◎</Text>
             <Text style={[styles.mobileBottomLabel, tab === "goals" && styles.mobileBottomLabelActive]}>Goals</Text>
           </Pressable>
-          <Pressable style={[styles.mobileBottomItem, tab === "transactions" && styles.mobileBottomItemActive]} onPress={() => handleTabPress("transactions")}>
+          <Pressable style={[styles.mobileBottomItem, tab === "transactions" && styles.mobileBottomItemActive]} onPress={() => openTransactionsPage()}>
             <Text style={[styles.mobileBottomIcon, tab === "transactions" && styles.mobileBottomIconActive]}>◔</Text>
             <Text style={[styles.mobileBottomLabel, tab === "transactions" && styles.mobileBottomLabelActive]}>Activity</Text>
           </Pressable>
@@ -5662,6 +5856,7 @@ const styles = StyleSheet.create({
   },
   mobileQuickActionBtn: {
     flex: 1,
+    position: "relative",
     backgroundColor: "#ffffff",
     borderRadius: 18,
     borderWidth: 1,
@@ -5678,6 +5873,28 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 5 },
     elevation: 2,
   },
+  mobileQuickActionAlert: {
+    borderColor: "#f97316",
+    backgroundColor: "#fff7ed",
+  },
+  mobileQuickActionBadge: {
+    position: "absolute",
+    top: 7,
+    right: 7,
+    minWidth: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: "#ef4444",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 6,
+    zIndex: 2,
+  },
+  mobileQuickActionBadgeText: {
+    color: "#ffffff",
+    fontSize: 11,
+    fontWeight: "900",
+  },
   mobileQuickActionIconWrap: {
     width: 38,
     height: 38,
@@ -5686,14 +5903,66 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  mobileQuickActionIconWrapAlert: {
+    backgroundColor: "#ffedd5",
+  },
   mobileQuickActionIcon: {
     fontSize: 16,
     color: SIDEBAR_BG,
   },
   mobileQuickActionLabel: {
     color: "#24295c",
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: "700",
+    lineHeight: 13,
+    textAlign: "center",
+  },
+  mobileWithdrawalAlertCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#fed7aa",
+    backgroundColor: "#fff7ed",
+    padding: 12,
+    shadowColor: "#9a3412",
+    shadowOpacity: 0.08,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 2,
+  },
+  mobileWithdrawalAlertIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 14,
+    backgroundColor: "#fb923c",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  mobileWithdrawalAlertIcon: {
+    color: "#ffffff",
+    fontSize: 18,
+    fontWeight: "900",
+  },
+  mobileWithdrawalAlertTextWrap: {
+    flex: 1,
+  },
+  mobileWithdrawalAlertTitle: {
+    color: "#7c2d12",
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  mobileWithdrawalAlertText: {
+    color: "#9a3412",
+    fontSize: 12,
+    fontWeight: "600",
+    marginTop: 2,
+  },
+  mobileWithdrawalAlertLink: {
+    color: "#c2410c",
+    fontSize: 12,
+    fontWeight: "900",
   },
   mobileLatestHeader: {
     flexDirection: "row",
@@ -6205,4 +6474,20 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 

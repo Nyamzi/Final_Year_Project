@@ -32,6 +32,7 @@ import {
 } from "../../lib/api";
 import { AppButton, AppInput } from "../../ui/controls";
 import { theme } from "../../ui/theme";
+import { MoneyPuzzlesScreen } from "./money-puzzles-screen";
 
 type ChildDashboardScreenProps = {
   email: string;
@@ -42,6 +43,7 @@ type TabKey =
   | "home"
   | "wallet"
   | "learn"
+  | "puzzles"
   | "transactions"
   | "notifications"
   | "savings"
@@ -54,6 +56,7 @@ const tabs: Array<{ key: TabKey; label: string }> = [
   { key: "home", label: "Home" },
   { key: "wallet", label: "My Wallet" },
   { key: "learn", label: "Learn & Earn" },
+  { key: "puzzles", label: "Games" },
   { key: "transactions", label: "Transactions" },
   { key: "notifications", label: "Notifications" },
   { key: "savings", label: "Savings Goals" },
@@ -69,6 +72,7 @@ const webNavItems: Array<{ label: string; key: TabKey; icon: string }> = [
   { label: "Goals", key: "savings", icon: "\u{1F3AF}" },
   { label: "Chores", key: "chores", icon: "\u2705" },
   { label: "Learn & Earn", key: "learn", icon: "\u{1F4DA}" },
+  { label: "Games", key: "puzzles", icon: "\u{1F9E9}" },
   { label: "Transactions", key: "transactions", icon: "\u{1F4CB}" },
   { label: "Notifications", key: "notifications", icon: "\u{1F514}" },
   { label: "Profile", key: "settings", icon: "\u2699\uFE0F" },
@@ -127,6 +131,7 @@ function getTabBackgroundImage(tab: TabKey) {
   if (tab === "savings") return bgIllustration3;
   if (tab === "chores") return bgIllustration4;
   if (tab === "learn") return bgIllustration5;
+  if (tab === "puzzles") return bgIllustration6;
   if (tab === "transactions") return bgIllustration6;
   if (tab === "notifications") return bgIllustration2;
   if (tab === "settings") return bgIllustration3;
@@ -139,6 +144,7 @@ function getTabHeroImage(tab: TabKey) {
   if (tab === "savings") return goalIllustration1;
   if (tab === "chores") return choreIllustration1;
   if (tab === "learn") return learnIllustration2;
+  if (tab === "puzzles") return moneyIllustration1;
   if (tab === "transactions") return moneyIllustration1;
   if (tab === "notifications") return bgIllustration2;
   if (tab === "settings") return learnIllustration3;
@@ -368,6 +374,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
     "Transactions",
     "Chores",
     "Learn & Earn",
+    "Games",
     "Notifications",
     "Settings",
     "Security & Privacy",
@@ -398,6 +405,10 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
     }
     if (item === "Learn & Earn") {
       setTab("learn");
+      return;
+    }
+    if (item === "Games") {
+      setTab("puzzles");
       return;
     }
     if (item === "Settings") {
@@ -440,16 +451,31 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
     : 0;
   const nextLearningLesson = learningLessons.find((lesson) => lesson.progress < 100) ?? learningLessons[0];
 
-  async function loadDashboardData() {
-    setIsLoading(true);
-    setErrorMessage("");
-
+  async function loadChildMoneyData(showError = false) {
     try {
-      const [meData, walletData, txData, savingsData, choresData, allowancesData, lessonsData] = await Promise.all([
-        apiMe(),
+      const [walletData, txData, savingsData] = await Promise.all([
         apiChildWallet(),
         apiChildTransactions(),
         apiChildSavingsGoals(),
+      ]);
+
+      setWallet(walletData.wallet);
+      setSavingsGoals(walletData.savingsGoals.length > 0 ? walletData.savingsGoals : savingsData.savingsGoals);
+      setAchievements(walletData.achievements ?? []);
+      setBudget(walletData.budget ?? null);
+      setTransactions(txData.transactions);
+    } catch (err) {
+      if (showError) setErrorMessage(err instanceof Error ? err.message : "Failed to refresh wallet data");
+    }
+  }
+
+  async function loadDashboardData(showLoading = true) {
+    if (showLoading) setIsLoading(true);
+    if (showLoading) setErrorMessage("");
+
+    try {
+      const [meData, choresData, allowancesData, lessonsData] = await Promise.all([
+        apiMe(),
         apiChildChores(),
         apiChildAllowances(),
         apiChildLearningLessons().catch(() => ({ lessons: [] as ChildLearningLesson[] })),
@@ -461,18 +487,14 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
       setChildAge(meData.user.childAge ?? null);
       setChildAboutMe(meData.user.aboutMe ?? null);
       setAboutMeDraft(meData.user.aboutMe ?? "");
-
-      setWallet(walletData.wallet);
-      setSavingsGoals(walletData.savingsGoals.length > 0 ? walletData.savingsGoals : savingsData.savingsGoals);
-      setAchievements(walletData.achievements ?? []);
-      setBudget(walletData.budget ?? null);
-      setTransactions(txData.transactions);
       setChores(choresData.chores);
       setAllowances(allowancesData.allowances);
       setAssignedLessons(lessonsData.lessons);
+
+      await loadChildMoneyData(showLoading);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to load child dashboard";
-      setErrorMessage(message);
+      if (showLoading) setErrorMessage(message);
     } finally {
       setIsLoading(false);
     }
@@ -480,6 +502,10 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
 
   useEffect(() => {
     loadDashboardData();
+    const refreshTimer = setInterval(() => {
+      void loadDashboardData(false);
+    }, 10000);
+    return () => clearInterval(refreshTimer);
   }, []);
 
   useEffect(() => {
@@ -633,7 +659,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
       setStatusMessage(data.message);
       setTxAmount("");
       setTxDescription("");
-      await loadDashboardData();
+      await loadChildMoneyData(true);
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "Could not create transaction.");
     } finally {
@@ -661,7 +687,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
       setStatusMessage(data.message);
       setGoalTitle("");
       setGoalAmount("");
-      await loadDashboardData();
+      await loadChildMoneyData(true);
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "Could not create savings goal.");
     } finally {
@@ -691,7 +717,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
       setWallet(data.wallet);
       setSavingsGoals((prev) => prev.map((g) => (g.id === goalId ? data.goal : g)));
       setFundGoalAmounts((prev) => ({ ...prev, [goalId]: "" }));
-      await loadDashboardData();
+      await loadChildMoneyData(true);
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "Could not fund goal.");
     } finally {
@@ -792,7 +818,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
       setWithdrawDescription("");
       setWithdrawGoalId("");
       setShowWithdrawForm(false);
-      await loadDashboardData();
+      await loadChildMoneyData(true);
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "Could not create withdrawal.");
     } finally {
@@ -808,7 +834,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
       const data = await apiCompleteChildChore(choreId);
       setStatusMessage(data.message);
       setShowReward(true);
-      await loadDashboardData();
+      await loadDashboardData(false);
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "Could not complete chore.");
     } finally {
@@ -1986,6 +2012,12 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
           </View>
         ) : null}
 
+
+        {!isLoading && tab === "puzzles" ? (
+          <View style={styles.sectionWrap}>
+            <MoneyPuzzlesScreen />
+          </View>
+        ) : null}
         {!isLoading && tab === "savings" && isMobile ? (
           <View style={styles.sectionWrap}>
             <View style={styles.mobileSectionHeader}>
@@ -4543,6 +4575,15 @@ const styles = StyleSheet.create({
     opacity: 0.55,
   },
 });
+
+
+
+
+
+
+
+
+
 
 
 

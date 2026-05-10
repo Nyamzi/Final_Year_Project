@@ -38,7 +38,7 @@ const budgetSchema = z.object({
   saveAmount: z.number().min(0),
   spendAmount: z.number().min(0),
   shareAmount: z.number().min(0),
-  periodType: z.enum(["weekly", "monthly", "quarterly"]).default("monthly"),
+  periodType: z.enum(["daily", "weekly", "monthly", "quarterly"]).default("monthly"),
 });
 
 const learningProgressSchema = z.object({
@@ -48,6 +48,12 @@ const learningProgressSchema = z.object({
 const childProfileSchema = z.object({
   aboutMe: z.string().max(500).optional(),
   profileImageUrl: z.string().min(1).optional(),
+});
+
+const gameScoreSchema = z.object({
+  gameName: z.enum(["Needs vs Wants Puzzle", "Find the Change Puzzle", "Build the Budget Puzzle"]),
+  score: z.number().int().min(0),
+  maxScore: z.number().int().positive(),
 });
 
 function resolvePublicApiBaseUrl(req: AuthenticatedRequest): string {
@@ -144,6 +150,10 @@ function getBudgetPeriodStart(date: Date, periodType: BudgetPeriod): Date {
   const start = new Date(date);
   start.setHours(0, 0, 0, 0);
 
+  if (periodType === "daily") {
+    return start;
+  }
+
   if (periodType === "weekly") {
     const day = start.getDay();
     const diffToMonday = day === 0 ? 6 : day - 1;
@@ -161,6 +171,56 @@ function getBudgetPeriodStart(date: Date, periodType: BudgetPeriod): Date {
   return start;
 }
 
+async function enforceWithdrawalLimit(input: {
+  childId: string;
+  walletId: string;
+  amount: number;
+  description: string;
+  withdrawalSource: "wallet" | "goal";
+  savingsGoalId?: string;
+}) {
+  const activeBudget = await prisma.budget.findFirst({
+    where: { childId: input.childId, isActive: true },
+    orderBy: { createdAt: "desc" },
+  });
+
+  if (!activeBudget) return null;
+
+  const activeLimit = Number(activeBudget.monthlyLimit);
+  if (!Number.isFinite(activeLimit) || activeLimit <= 0) return null;
+
+  const periodStart = getBudgetPeriodStart(new Date(), activeBudget.periodType);
+  const periodSpentAggregate = await prisma.transaction.aggregate({
+    _sum: { amount: true },
+    where: {
+      childId: input.childId,
+      type: TransactionType.spend,
+      status: TransactionStatus.approved,
+      createdAt: { gte: periodStart },
+    },
+  });
+
+  const spentThisPeriod = Number(periodSpentAggregate._sum.amount ?? 0);
+  const remaining = Math.max(0, activeLimit - spentThisPeriod);
+  if (input.amount <= remaining) return null;
+
+  await prisma.transaction.create({
+    data: {
+      walletId: input.walletId,
+      childId: input.childId,
+      amount: input.amount,
+      type: TransactionType.spend,
+      status: TransactionStatus.rejected,
+      description: `Spending limit reached: ${input.description}`,
+      withdrawalSource: input.withdrawalSource,
+      savingsGoalId: input.savingsGoalId,
+    },
+  });
+
+  return {
+    error: `You have reached your ${activeBudget.periodType} spending limit. Remaining amount: UGX ${Math.round(remaining).toLocaleString()}`,
+  };
+}
 function serializeBudget(budget: {
   id: string;
   title: string;
@@ -798,6 +858,14 @@ router.post("/withdrawals", authMiddleware, requireRole("child"), async (req: Au
         return res.status(400).json({ error: "You do not have enough money in your wallet." });
       }
 
+      const limitResult = await enforceWithdrawalLimit({
+        childId: child.id,
+        walletId: child.wallet.id,
+        amount,
+        description: parsed.data.description || "Wallet withdrawal request",
+        withdrawalSource: "wallet",
+      });
+      if (limitResult) return res.status(400).json(limitResult);
       const transaction = await prisma.transaction.create({
         data: {
           walletId: child.wallet.id,
@@ -842,6 +910,16 @@ router.post("/withdrawals", authMiddleware, requireRole("child"), async (req: Au
     if (amount > Number(goal.currentAmount)) {
       return res.status(400).json({ error: "This goal does not have enough saved money." });
     }
+
+    const limitResult = await enforceWithdrawalLimit({
+      childId: child.id,
+      walletId: child.wallet.id,
+      amount,
+      description: parsed.data.description || `Completed goal withdrawal: ${goal.title}`,
+      withdrawalSource: "goal",
+      savingsGoalId: goal.id,
+    });
+    if (limitResult) return res.status(400).json(limitResult);
 
     const transaction = await prisma.transaction.create({
       data: {
@@ -1137,7 +1215,76 @@ router.patch("/learning/lessons/:assignmentId/progress", authMiddleware, require
   }
 });
 
+
+router.get("/game-scores", authMiddleware, requireRole("child"), async (req: AuthenticatedRequest, res) => {
+  try {
+    const child = await prisma.childProfile.findUnique({
+      where: { childUserId: req.user!.userId },
+      select: { id: true },
+    });
+    if (!child) return res.status(404).json({ error: "Child profile not found" });
+
+    const scores = await prisma.gameScore.findMany({
+      where: { childId: child.id },
+      orderBy: { completedAt: "desc" },
+      take: 20,
+    });
+
+    res.json({
+      scores: scores.map((score) => ({
+        id: score.id,
+        gameName: score.gameName,
+        score: score.score,
+        maxScore: score.maxScore,
+        completedAt: score.completedAt.toISOString(),
+      })),
+    });
+  } catch (error) {
+    console.error("Get child game scores error:", error);
+    res.status(500).json({ error: "Failed to fetch puzzle scores" });
+  }
+});
+
+router.post("/game-scores", authMiddleware, requireRole("child"), async (req: AuthenticatedRequest, res) => {
+  try {
+    const parsed = gameScoreSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "Invalid puzzle score payload" });
+
+    const child = await prisma.childProfile.findUnique({
+      where: { childUserId: req.user!.userId },
+      select: { id: true, childUserId: true },
+    });
+    if (!child) return res.status(404).json({ error: "Child profile not found" });
+
+    const score = await prisma.gameScore.create({
+      data: {
+        childId: child.id,
+        childUserId: child.childUserId,
+        gameName: parsed.data.gameName,
+        score: Math.min(parsed.data.score, parsed.data.maxScore),
+        maxScore: parsed.data.maxScore,
+      },
+    });
+
+    res.status(201).json({
+      message: "Puzzle score saved.",
+      score: {
+        id: score.id,
+        gameName: score.gameName,
+        score: score.score,
+        maxScore: score.maxScore,
+        completedAt: score.completedAt.toISOString(),
+      },
+    });
+  } catch (error) {
+    console.error("Save child game score error:", error);
+    res.status(500).json({ error: "Failed to save puzzle score" });
+  }
+});
 export default router;
+
+
+
 
 
 

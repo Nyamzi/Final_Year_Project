@@ -69,6 +69,7 @@ model User {
   notificationReads    NotificationRead[]
   parentDeposits       ParentDeposit[]
   lessonAssignments    ChildLessonAssignment[] @relation("ParentLessonAssignments")
+  childGameScores      GameScore[]             @relation("ChildUserGameScores")
 }
 
 model ChildProfile {
@@ -90,6 +91,7 @@ model ChildProfile {
   chores             ChoreAssignment[]
   allowanceSchedules AllowanceSchedule[]
   lessonAssignments  ChildLessonAssignment[]
+  gameScores         GameScore[]
 }
 
 model ChoreAssignment {
@@ -186,6 +188,7 @@ model Budget {
 }
 
 enum BudgetPeriod {
+  daily
   weekly
   monthly
   quarterly
@@ -249,6 +252,21 @@ model Quiz {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
+}
+
+model GameScore {
+  id          String       @id @default(cuid())
+  childId     String
+  childUserId String       @db.Uuid
+  gameName    String
+  score       Int
+  maxScore    Int
+  completedAt DateTime     @default(now())
+  child       ChildProfile @relation(fields: [childId], references: [id], onDelete: Cascade)
+  childUser   User         @relation("ChildUserGameScores", fields: [childUserId], references: [id], onDelete: Cascade)
+
+  @@index([childId, completedAt])
+  @@index([gameName])
 }
 
 model ParentSettings {

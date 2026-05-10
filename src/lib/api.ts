@@ -81,7 +81,7 @@ export type ChildBudgetSummary = {
   saveAmount: number;
   spendAmount: number;
   shareAmount: number;
-  periodType: "weekly" | "monthly" | "quarterly";
+  periodType: "daily" | "weekly" | "monthly" | "quarterly";
   isActive: boolean;
   periodStart: string;
   periodEnd: string | null;
@@ -93,6 +93,14 @@ export type ChildBudgetSuggestion = {
   saveAmount: number;
   spendAmount: number;
   shareAmount: number;
+};
+
+export type ChildGameScore = {
+  id: string;
+  gameName: string;
+  score: number;
+  maxScore: number;
+  completedAt: string;
 };
 
 export type TransactionSummary = {
@@ -131,7 +139,7 @@ export type ParentChildSummary = {
   profileImageUrl: string | null;
   wallet: WalletSummary | null;
   activeSpendingLimit: number | null;
-  activeSpendingLimitPeriod: "weekly" | "monthly" | "quarterly" | null;
+  activeSpendingLimitPeriod: "daily" | "weekly" | "monthly" | "quarterly" | null;
 };
 
 export type ParentPendingTransaction = {
@@ -628,6 +636,49 @@ export async function apiSendOtp(email: string) {
   }
   return { message: "Verification code sent" };
 }
+export type LoginStartResponse =
+  | { requiresOtp: true; message: string; email: string }
+  | ({ requiresOtp: false } & LoginResponse);
+
+export async function apiSendLoginOtpAfterPassword(input: LoginRequest): Promise<LoginStartResponse> {
+  const email = input.email.trim().toLowerCase();
+  let passwordResult;
+  try {
+    passwordResult = await supabase.auth.signInWithPassword({
+      email,
+      password: input.password,
+    });
+  } catch (error) {
+    throw new Error(`Supabase Auth network failed: ${process.env.EXPO_PUBLIC_SUPABASE_URL ?? "missing-url"} (${getErrorMessage(error)})`);
+  }
+
+  const { data, error } = passwordResult;
+  if (error || !data.session?.access_token) {
+    throw new Error(error?.message ?? "Invalid email or password");
+  }
+
+  setAuthToken(data.session.access_token);
+  const me = await apiMe();
+
+  if (me.user.role !== "parent") {
+    return {
+      requiresOtp: false,
+      message: "Logged in",
+      role: me.user.role,
+      token: data.session.access_token,
+      email: me.user.email,
+      fullName: me.user.fullName,
+      phoneNumber: me.user.phoneNumber,
+      nin: me.user.nin,
+      profileImageUrl: me.user.profileImageUrl,
+    } satisfies LoginStartResponse;
+  }
+
+  await supabase.auth.signOut();
+  setAuthToken(null);
+  await apiSendOtp(email);
+  return { requiresOtp: true, message: "Verification code sent", email };
+}
 
 export async function apiVerifyOtp(input: { email: string; token: string }) {
   const { data, error } = await supabase.auth.verifyOtp({
@@ -728,6 +779,19 @@ export function apiChildWallet() {
   });
 }
 
+export function apiChildGameScores() {
+  return request<{ scores: ChildGameScore[] }>("/api/child/game-scores", {
+    method: "GET",
+  });
+}
+
+export function apiSaveChildGameScore(input: { gameName: string; score: number; maxScore: number }) {
+  return request<{ message: string; score: ChildGameScore }>("/api/child/game-scores", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 export function apiChildBudget() {
   return request<{ budget: ChildBudgetSummary | null; suggestedBudget: ChildBudgetSuggestion }>("/api/child/budget", {
     method: "GET",
@@ -739,7 +803,7 @@ export function apiSaveChildBudget(input: {
   saveAmount: number;
   spendAmount: number;
   shareAmount: number;
-  periodType: "weekly" | "monthly" | "quarterly";
+  periodType: "daily" | "weekly" | "monthly" | "quarterly";
 }) {
   return request<{ message: string; budget: ChildBudgetSummary }>("/api/child/budget", {
     method: "POST",
@@ -888,7 +952,7 @@ export function apiParentTransactionDecision(id: string, decision: "approved" | 
 export function apiParentSpendingLimit(input: {
   childId: string;
   monthlyLimit: number;
-  periodType: "weekly" | "monthly" | "quarterly";
+  periodType: "daily" | "weekly" | "monthly";
 }) {
   return request<{ message: string }>("/api/parent/spending-limit", {
     method: "POST",
@@ -1257,5 +1321,10 @@ export function apiLogDashboardAction(input: {
     body: JSON.stringify(input),
   });
 }
+
+
+
+
+
 
 

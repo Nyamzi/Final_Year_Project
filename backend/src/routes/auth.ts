@@ -9,20 +9,24 @@ import { getSupabaseAdmin, supabase } from "../lib/supabase";
 const router = Router();
 
 const loginSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8),
+  email: z.string().trim().email("Enter a valid email address."),
+  password: z.string().min(8, "Password must be at least 8 characters."),
 });
 
 const registerSchema = z.object({
-  fullName: z.string().min(3).max(120),
-  nin: z.string().regex(/^[A-Za-z0-9]{8,20}$/),
-  phoneNumber: z.string().regex(/^\+?[0-9]{10,15}$/),
-  email: z.string().email(),
-  sex: z.enum(["male", "female"]),
-  profileImageUrl: z.string().min(20),
-  password: z.string().min(8),
-  confirmPassword: z.string().min(8),
+  fullName: z.string().trim().min(3, "Full name must be at least 3 characters.").max(120, "Full name is too long."),
+  nin: z.string().trim().regex(/^[A-Za-z0-9]{8,20}$/, "NIN must be 8 to 20 letters or numbers."),
+  phoneNumber: z.string().trim().regex(/^\+?[0-9]{10,15}$/, "Phone number must be 10 to 15 digits and may start with +."),
+  email: z.string().trim().toLowerCase().email("Enter a valid email address."),
+  sex: z.enum(["male", "female"], { message: "Select male or female." }),
+  profileImageUrl: z.string().min(20, "Choose a profile picture."),
+  password: z.string().min(8, "Password must be at least 8 characters."),
+  confirmPassword: z.string().min(8, "Confirm password must be at least 8 characters."),
 });
+
+function getValidationMessage(error: z.ZodError) {
+  return error.issues[0]?.message ?? "Invalid input";
+}
 
 const changePasswordSchema = z.object({
   currentPassword: z.string().min(8),
@@ -35,7 +39,7 @@ router.post("/login", async (req, res) => {
   try {
     const parsed = loginSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid input" });
+      return res.status(400).json({ error: getValidationMessage(parsed.error) });
     }
 
     const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
@@ -70,7 +74,7 @@ router.post("/register", async (req, res) => {
   try {
     const parsed = registerSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid input" });
+      return res.status(400).json({ error: getValidationMessage(parsed.error) });
     }
 
     if (parsed.data.password !== parsed.data.confirmPassword) {
@@ -239,7 +243,7 @@ router.post("/change-password", authMiddleware, async (req: AuthenticatedRequest
   try {
     const parsed = changePasswordSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid input" });
+      return res.status(400).json({ error: getValidationMessage(parsed.error) });
     }
 
     const { currentPassword, newPassword, confirmPassword } = parsed.data;
@@ -283,4 +287,5 @@ router.post("/change-password", authMiddleware, async (req: AuthenticatedRequest
 });
 
 export default router;
+
 
