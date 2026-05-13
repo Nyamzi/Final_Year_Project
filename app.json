@@ -1,43 +1,43 @@
 {
-  "expo": {
-    "name": "KidsApp",
-    "slug": "KidsApp",
-    "scheme": "kidsapp",
-    "version": "1.0.0",
-    "orientation": "portrait",
-    "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
-    },
-    "plugins": [
-      "./plugins/withCleartextTraffic",
-      "expo-web-browser"
-    ],
-    "ios": {
-      "bundleIdentifier": "com.david.kidsapp",
-      "supportsTablet": true
-    },
-    "android": {
-      "package": "com.david.kidsapp",
-      "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
-      },
-      "predictiveBackGestureEnabled": false,
-      "usesCleartextTraffic": true
-    },
-    "web": {
-      "favicon": "./assets/favicon.png"
-    },
-    "extra": {
-      "eas": {
-        "projectId": "621aaa1d-b6c9-4056-89ba-62bbe9acba9a"
-      }
-    }
-  }
+    "expo":  {
+                 "name":  "KidsApp",
+                 "slug":  "KidsApp",
+                 "scheme":  "kidsapp",
+                 "version":  "1.0.0",
+                 "orientation":  "portrait",
+                 "icon":  "./assets/icon.png",
+                 "userInterfaceStyle":  "light",
+                 "splash":  {
+                                "image":  "./assets/splash-icon.png",
+                                "resizeMode":  "contain",
+                                "backgroundColor":  "#ffffff"
+                            },
+                 "plugins":  [
+                                 "./plugins/withCleartextTraffic",
+                                 "expo-web-browser"
+                             ],
+                 "ios":  {
+                             "bundleIdentifier":  "com.david.kidsapp",
+                             "supportsTablet":  true
+                         },
+                 "android":  {
+                                 "package":  "com.david.kidsapp",
+                                 "adaptiveIcon":  {
+                                                      "backgroundColor":  "#E6F4FE",
+                                                      "foregroundImage":  "./assets/android-icon-foreground.png",
+                                                      "backgroundImage":  "./assets/android-icon-background.png",
+                                                      "monochromeImage":  "./assets/android-icon-monochrome.png"
+                                                  },
+                                 "predictiveBackGestureEnabled":  false,
+                                 "usesCleartextTraffic":  true
+                             },
+                 "web":  {
+                             "favicon":  "./assets/favicon.png"
+                         },
+                 "extra":  {
+                               "eas":  {
+                                           "projectId":  "621aaa1d-b6c9-4056-89ba-62bbe9acba9a"
+                                       }
+                           }
+             }
 }

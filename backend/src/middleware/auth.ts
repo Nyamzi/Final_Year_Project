@@ -1,4 +1,4 @@
-import { Request, Response, NextFunction } from "express";
+﻿import { Request, Response, NextFunction } from "express";
 import { AUTH_COOKIE, AuthTokenPayload, UserRole } from "../lib/auth";
 import { prisma } from "../db";
 import { supabase } from "../lib/supabase";
@@ -17,22 +17,32 @@ export async function authMiddleware(req: AuthenticatedRequest, res: Response, n
   }
 
   let authUserId = "";
+  let authUserEmail = "";
   try {
     const { data, error } = await supabase.auth.getUser(token);
     if (error || !data.user?.email) {
       return res.status(401).json({ error: "Unauthorized" });
     }
     authUserId = data.user.id;
+    authUserEmail = data.user.email.toLowerCase();
   } catch (error) {
     console.error("Supabase auth lookup failed:", error);
     return res.status(503).json({ error: "Authentication service unavailable. Please try again." });
   }
 
   let appUser: { id: string; email: string; role: UserRole; isActive: boolean } | null = null;
-  const findAppUser = () => prisma.user.findUnique({
-    where: { id: authUserId },
-    select: { id: true, email: true, role: true, isActive: true },
-  });
+  const findAppUser = async () => {
+    const userById = await prisma.user.findUnique({
+      where: { id: authUserId },
+      select: { id: true, email: true, role: true, isActive: true },
+    });
+    if (userById) return userById;
+
+    return prisma.user.findUnique({
+      where: { email: authUserEmail },
+      select: { id: true, email: true, role: true, isActive: true },
+    });
+  };
 
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
@@ -83,8 +93,6 @@ export function errorHandler(
   console.error("Unhandled error:", err);
   res.status(500).json({ error: "Internal server error" });
 }
-
-
 
 
 

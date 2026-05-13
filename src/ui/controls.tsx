@@ -89,6 +89,39 @@ export function AppDateInput({ label, value, placeholder = "YYYY-MM-DD", onChang
   );
 }
 
+type AppTimeInputProps = {
+  label: string;
+  value: string;
+  placeholder?: string;
+  onChangeText: (value: string) => void;
+};
+
+export function AppTimeInput({ label, value, placeholder = "HH:MM", onChangeText }: AppTimeInputProps) {
+  if (Platform.OS === "web") {
+    return (
+      <View style={styles.fieldWrap}>
+        <Text style={styles.label}>{label}</Text>
+        <input
+          type="time"
+          value={value}
+          onChange={(event) => onChangeText(event.target.value)}
+          placeholder={placeholder}
+          style={webDateInputStyle}
+        />
+      </View>
+    );
+  }
+
+  return (
+    <AppInput
+      label={label}
+      value={value}
+      placeholder={placeholder}
+      onChangeText={onChangeText}
+    />
+  );
+}
+
 type AppButtonProps = {
   title: string;
   loading?: boolean;
@@ -176,3 +209,4 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
 });
+

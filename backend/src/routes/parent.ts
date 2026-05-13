@@ -1,4 +1,4 @@
-import fs from "fs";
+﻿import fs from "fs";
 import path from "path";
 import { randomUUID } from "crypto";
 import { Router } from "express";
@@ -303,7 +303,7 @@ async function processDueAllowancesForParent(parentId: string) {
   });
 }
 
-// ─── Children ─────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Children â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.get("/children", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
   try {
@@ -464,7 +464,7 @@ router.delete("/children/:childId", authMiddleware, requireRole("parent"), async
     res.status(500).json({ error: "Failed to delete child account" });
   }
 });
-// ─── Pending Transactions ─────────────────────────────────────────────────────
+// â”€â”€â”€ Pending Transactions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.get("/transactions/pending", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
   try {
@@ -517,12 +517,12 @@ router.post("/transactions/:id/decision", authMiddleware, requireRole("parent"),
     const decision = parsed.data.decision as TransactionStatus;
 
     if (decision === TransactionStatus.approved && transaction.type === TransactionType.spend) {
-      const activeBudget = await prisma.budget.findFirst({
+      const activeBudgets = await prisma.budget.findMany({
         where: { childId: transaction.childId, isActive: true },
-        orderBy: { createdAt: "desc" },
+        orderBy: [{ periodType: "asc" }, { createdAt: "desc" }],
       });
 
-      if (activeBudget) {
+      for (const activeBudget of activeBudgets) {
         const activeLimit = Number(activeBudget.monthlyLimit);
         const periodStart = getBudgetPeriodStart(new Date(), activeBudget.periodType);
         const periodSpentAggregate = await prisma.transaction.aggregate({
@@ -629,7 +629,7 @@ router.post("/transactions/:id/decision", authMiddleware, requireRole("parent"),
   }
 });
 
-// ─── Spending Limits ──────────────────────────────────────────────────────────
+// â”€â”€â”€ Spending Limits â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.post("/spending-limit", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
   try {
@@ -647,7 +647,7 @@ router.post("/spending-limit", authMiddleware, requireRole("parent"), async (req
 
     await prisma.$transaction(async (tx) => {
       await tx.budget.updateMany({
-        where: { childId: child.id, isActive: true },
+        where: { childId: child.id, isActive: true, periodType: parsed.data.periodType as BudgetPeriod },
         data: { isActive: false, periodEnd: new Date() },
       });
       await tx.budget.create({
@@ -667,7 +667,7 @@ router.post("/spending-limit", authMiddleware, requireRole("parent"), async (req
   }
 });
 
-// ─── Chores ───────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Chores â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.get("/chores", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
   try {
@@ -745,7 +745,7 @@ router.post("/chores", authMiddleware, requireRole("parent"), async (req: Authen
   }
 });
 
-// ─── Allowances ───────────────────────────────────────────────────────────────
+// â”€â”€â”€ Allowances â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.get("/allowances", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
   try {
@@ -1005,7 +1005,7 @@ router.patch("/allowances/:id", authMiddleware, requireRole("parent"), async (re
   }
 });
 
-// ─── All Transactions ─────────────────────────────────────────────────────────
+// â”€â”€â”€ All Transactions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.get("/transactions", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
   try {
@@ -1079,7 +1079,7 @@ router.get("/transactions", authMiddleware, requireRole("parent"), async (req: A
   }
 });
 
-// ─── Fund Child Wallet ────────────────────────────────────────────────────────
+// â”€â”€â”€ Fund Child Wallet â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const fundSchema = z.object({
   childId: z.string().min(1),
@@ -1159,7 +1159,7 @@ router.post("/fund", authMiddleware, requireRole("parent"), async (req: Authenti
   }
 });
 
-// ─── Parent Account Balance & Deposits ───────────────────────────────────────
+// â”€â”€â”€ Parent Account Balance & Deposits â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.get("/account-balance", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
   try {
@@ -1219,7 +1219,7 @@ router.post("/deposit", authMiddleware, requireRole("parent"), async (req: Authe
   }
 });
 
-// ─── Savings Goals ────────────────────────────────────────────────────────────
+// â”€â”€â”€ Savings Goals â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const savingsGoalSchema = z.object({
   title: z.string().min(2).max(120),
@@ -1304,7 +1304,7 @@ router.post("/children/:childId/savings-goals", authMiddleware, requireRole("par
   }
 });
 
-// ─── Account ──────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Account â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.get("/learning/lessons", authMiddleware, requireRole("parent"), async (_req: AuthenticatedRequest, res) => {
   try {
@@ -1496,7 +1496,6 @@ router.delete("/account", authMiddleware, requireRole("parent"), async (req: Aut
     if (!parent) {
       return res.status(404).json({ error: "Parent account not found" });
     }
-
     const authIds = [parent.id, ...parent.parentChildren.map((child) => child.childUserId)];
     await prisma.user.delete({ where: { id: parent.id } });
     await Promise.all(authIds.map((id) => getSupabaseAdmin().auth.admin.deleteUser(id).catch(() => null)));
@@ -1532,12 +1531,37 @@ router.patch("/children/:childId/password", authMiddleware, requireRole("parent"
     if (!child) {
       return res.status(404).json({ error: "Child not found" });
     }
-
-    const { error: updateError } = await getSupabaseAdmin().auth.admin.updateUserById(child.childUser.id, {
+    const admin = getSupabaseAdmin();
+    const { error: updateError } = await admin.auth.admin.updateUserById(child.childUser.id, {
       password: parsed.data.newPassword,
     });
+
     if (updateError) {
-      return res.status(400).json({ error: updateError.message });
+      const isMissingAuthUser = /not\s*found|does not exist|404/i.test(updateError.message);
+      if (!isMissingAuthUser) {
+        return res.status(400).json({ error: updateError.message });
+      }
+
+      const { data: authData, error: createError } = await admin.auth.admin.createUser({
+        email: child.childUser.email,
+        password: parsed.data.newPassword,
+        email_confirm: true,
+        user_metadata: {
+          fullName: child.childUser.fullName,
+          role: Role.child,
+          parentId: req.user!.userId,
+          profileImageUrl: child.childUser.profileImageUrl,
+        },
+      });
+
+      if (createError || !authData.user) {
+        return res.status(400).json({ error: createError?.message ?? "Could not recreate child auth account" });
+      }
+
+      await prisma.user.update({
+        where: { id: child.childUser.id },
+        data: { id: authData.user.id },
+      });
     }
 
     res.json({ message: `Password updated for ${child.nickname}` });
@@ -1547,7 +1571,7 @@ router.patch("/children/:childId/password", authMiddleware, requireRole("parent"
   }
 });
 
-// ─── Parent Preferences ───────────────────────────────────────────────────────
+// â”€â”€â”€ Parent Preferences â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.get("/preferences", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
   try {
@@ -1625,7 +1649,7 @@ router.patch("/preferences", authMiddleware, requireRole("parent"), async (req: 
   }
 });
 
-// ─── Parent Notifications ─────────────────────────────────────────────────────
+// â”€â”€â”€ Parent Notifications â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.get("/notifications", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
   try {
@@ -1845,7 +1869,7 @@ router.patch("/notifications/mark-all-read", authMiddleware, requireRole("parent
   }
 });
 
-// ─── Parent Reports ───────────────────────────────────────────────────────────
+// â”€â”€â”€ Parent Reports â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.get("/reports/summary", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
   try {
@@ -2534,7 +2558,7 @@ router.get("/reports/pdf", authMiddleware, requireRole("parent"), async (req: Au
   }
 });
 
-// ─── Parent Support ───────────────────────────────────────────────────────────
+// â”€â”€â”€ Parent Support â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.get("/support-tickets", authMiddleware, requireRole("parent"), async (req: AuthenticatedRequest, res) => {
   try {
@@ -2590,6 +2614,13 @@ router.post("/support-tickets", authMiddleware, requireRole("parent"), async (re
 });
 
 export default router;
+
+
+
+
+
+
+
 
 
 

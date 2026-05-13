@@ -1,4 +1,4 @@
-import { Router } from "express";
+﻿import { Router } from "express";
 import { z } from "zod";
 import { Role, Sex } from "@prisma/client";
 import { AUTH_COOKIE } from "../lib/auth";
@@ -34,7 +34,6 @@ const changePasswordSchema = z.object({
   confirmPassword: z.string().min(8),
 });
 
-// POST /api/auth/login
 router.post("/login", async (req, res) => {
   try {
     const parsed = loginSchema.safeParse(req.body);
@@ -50,7 +49,9 @@ router.post("/login", async (req, res) => {
       return res.status(401).json({ error: "Invalid credentials" });
     }
 
-    const user = await prisma.user.findUnique({ where: { id: authData.user.id } });
+    const user =
+      (await prisma.user.findUnique({ where: { id: authData.user.id } })) ??
+      (authData.user.email ? await prisma.user.findUnique({ where: { email: authData.user.email.toLowerCase() } }) : null);
     if (!user) {
       return res.status(401).json({ error: "User profile not found" });
     }
@@ -69,7 +70,6 @@ router.post("/login", async (req, res) => {
   }
 });
 
-// POST /api/auth/register
 router.post("/register", async (req, res) => {
   try {
     const parsed = registerSchema.safeParse(req.body);
@@ -144,7 +144,6 @@ router.post("/register", async (req, res) => {
   }
 });
 
-// POST /api/auth/oauth-profile
 router.post("/oauth-profile", async (req, res) => {
   try {
     const authHeader = req.header("authorization");
@@ -191,7 +190,7 @@ router.post("/oauth-profile", async (req, res) => {
     res.status(500).json({ error: "Failed to prepare Google sign-in profile" });
   }
 });
-// GET /api/auth/me
+
 router.get("/me", authMiddleware, async (req: AuthenticatedRequest, res) => {
   const user = await prisma.user.findUnique({
     where: { id: req.user!.userId },
@@ -232,13 +231,11 @@ router.get("/me", authMiddleware, async (req: AuthenticatedRequest, res) => {
   });
 });
 
-// POST /api/auth/logout
 router.post("/logout", (req, res) => {
   res.clearCookie(AUTH_COOKIE, { path: "/" });
   res.json({ message: "Logged out" });
 });
 
-// POST /api/auth/change-password
 router.post("/change-password", authMiddleware, async (req: AuthenticatedRequest, res) => {
   try {
     const parsed = changePasswordSchema.safeParse(req.body);

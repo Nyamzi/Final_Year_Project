@@ -3,7 +3,6 @@ import * as WebBrowser from "expo-web-browser";
 import { supabase } from "./supabase";
 
 WebBrowser.maybeCompleteAuthSession();
-
 export type UserRole = "parent" | "child" | "admin";
 
 export type LoginRequest = {
@@ -479,6 +478,8 @@ export type StatementIncludeField = "date" | "child" | "type" | "status" | "desc
 
 const fallbackBaseUrl = "http://localhost:3000";
 const configuredBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL?.trim() || fallbackBaseUrl;
+const configuredTimeoutMs = Number(process.env.EXPO_PUBLIC_API_TIMEOUT_MS ?? 30000);
+const requestTimeoutMs = Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs >= 10000 ? configuredTimeoutMs : 30000;
 
 export const API_BASE_URL = configuredBaseUrl.endsWith("/")
   ? configuredBaseUrl.slice(0, -1)
@@ -525,15 +526,26 @@ async function request<TResponse>(path: string, init?: RequestInit): Promise<TRe
   }
 
   const url = `${API_BASE_URL}${path}`;
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const method = (init?.method ?? "GET").toUpperCase();
+  const timeoutMs = method === "GET" ? requestTimeoutMs : Math.max(requestTimeoutMs, 30000);
+  const timeout = controller
+    ? setTimeout(() => controller.abort(), timeoutMs)
+    : null;
+
   let response: Response;
   try {
     response = await fetch(url, {
       ...init,
       credentials: "include",
       headers,
+      signal: controller?.signal ?? init?.signal,
     });
   } catch (error) {
-    throw new Error(`Backend network failed: ${url} (${getErrorMessage(error)})`);
+    const reason = error instanceof Error && error.name === "AbortError" ? `timed out after ${Math.round(timeoutMs / 1000)}s` : getErrorMessage(error);
+    throw new Error(`Backend network failed: ${url} (${reason})`);
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 
   const text = await response.text();
@@ -766,7 +778,6 @@ export async function apiLogout() {
   setAuthToken(null);
   return response;
 }
-
 export function apiChildWallet() {
   return request<{
     wallet: WalletSummary;
@@ -1321,6 +1332,13 @@ export function apiLogDashboardAction(input: {
     body: JSON.stringify(input),
   });
 }
+
+
+
+
+
+
+
 
 
 

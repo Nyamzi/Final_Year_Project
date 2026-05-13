@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Easing, Image, Platform, Pressable, ScrollView, StatusBar, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import {
@@ -82,10 +82,14 @@ function resolveChildProfileImageUrl(url: string | null | undefined): string | n
   if (!url || typeof url !== "string") return null;
   const trimmed = url.trim();
   if (!trimmed) return null;
+  if (trimmed.startsWith("data:") || trimmed.startsWith("file:") || trimmed.startsWith("blob:")) return trimmed;
+
+  const uploadPath = trimmed.match(/\/uploads\/profiles\/[^?#]+/i)?.[0];
+  if (uploadPath) return `${API_BASE_URL.replace(/\/$/, "")}${uploadPath}`;
+
   if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed;
-  const base = API_BASE_URL.replace(/\/$/, "");
   const path = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
-  return `${base}${path}`;
+  return `${API_BASE_URL.replace(/\/$/, "")}${path}`;
 }
 
 const formatMoney = (value: number) => `UGX ${value.toLocaleString()}`;
@@ -208,6 +212,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
   const [chores, setChores] = useState<ChoreSummary[]>([]);
   const [allowances, setAllowances] = useState<AllowanceSummary[]>([]);
   const [assignedLessons, setAssignedLessons] = useState<ChildLearningLesson[]>([]);
+  const [learningFilter, setLearningFilter] = useState<"all" | "in_progress" | "completed" | "quizzes">("all");
   const [achievements, setAchievements] = useState<ChildAchievementSummary[]>([]);
   const [budget, setBudget] = useState<ChildBudgetSummary | null>(null);
 
@@ -449,6 +454,19 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
   const learningProgressPercent = learningLessons.length
     ? Math.round(learningLessons.reduce((total, lesson) => total + lesson.progress, 0) / learningLessons.length)
     : 0;
+  const filteredLearningLessons = useMemo(() => {
+    if (learningFilter === "in_progress") {
+      return learningLessons.filter((lesson) => lesson.progress > 0 && lesson.progress < 100);
+    }
+    if (learningFilter === "completed") {
+      return learningLessons.filter((lesson) => lesson.progress >= 100);
+    }
+    if (learningFilter === "quizzes") {
+      return learningLessons.filter((lesson) => /quiz/i.test(lesson.resourceType) || /quiz/i.test(`${lesson.title} ${lesson.subtitle} ${lesson.content}`));
+    }
+    return learningLessons;
+  }, [learningFilter, learningLessons]);
+  const featuredLearningLesson = filteredLearningLessons.find((lesson) => lesson.progress < 100) ?? filteredLearningLessons[0] ?? null;
   const nextLearningLesson = learningLessons.find((lesson) => lesson.progress < 100) ?? learningLessons[0];
 
   async function loadChildMoneyData(showError = false) {
@@ -469,17 +487,37 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
     }
   }
 
+  async function loadChildSupplementalData(showError = false) {
+    const [txResult, savingsResult, choresResult, allowancesResult, lessonsResult] = await Promise.allSettled([
+      apiChildTransactions(),
+      apiChildSavingsGoals(),
+      apiChildChores(),
+      apiChildAllowances(),
+      apiChildLearningLessons(),
+    ]);
+
+    if (txResult.status === "fulfilled") setTransactions(txResult.value.transactions);
+    if (savingsResult.status === "fulfilled") {
+      setSavingsGoals((current) => (current.length > 0 ? current : savingsResult.value.savingsGoals));
+    }
+    if (choresResult.status === "fulfilled") setChores(choresResult.value.chores);
+    if (allowancesResult.status === "fulfilled") setAllowances(allowancesResult.value.allowances);
+    if (lessonsResult.status === "fulfilled") setAssignedLessons(lessonsResult.value.lessons);
+
+    if (showError) {
+      const firstError = [txResult, savingsResult, choresResult, allowancesResult, lessonsResult].find((result) => result.status === "rejected");
+      if (firstError?.status === "rejected") {
+        setErrorMessage(firstError.reason instanceof Error ? firstError.reason.message : "Failed to refresh child data");
+      }
+    }
+  }
+
   async function loadDashboardData(showLoading = true) {
     if (showLoading) setIsLoading(true);
     if (showLoading) setErrorMessage("");
 
     try {
-      const [meData, choresData, allowancesData, lessonsData] = await Promise.all([
-        apiMe(),
-        apiChildChores(),
-        apiChildAllowances(),
-        apiChildLearningLessons().catch(() => ({ lessons: [] as ChildLearningLesson[] })),
-      ]);
+      const [meData, walletData] = await Promise.all([apiMe(), apiChildWallet()]);
 
       setChildNickname(meData.user.nickname ?? null);
       setChildFullName(meData.user.fullName ?? null);
@@ -487,11 +525,13 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
       setChildAge(meData.user.childAge ?? null);
       setChildAboutMe(meData.user.aboutMe ?? null);
       setAboutMeDraft(meData.user.aboutMe ?? "");
-      setChores(choresData.chores);
-      setAllowances(allowancesData.allowances);
-      setAssignedLessons(lessonsData.lessons);
+      setWallet(walletData.wallet);
+      setSavingsGoals(walletData.savingsGoals);
+      setAchievements(walletData.achievements ?? []);
+      setBudget(walletData.budget ?? null);
+      if (showLoading) setIsLoading(false);
 
-      await loadChildMoneyData(showLoading);
+      await loadChildSupplementalData(showLoading);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to load child dashboard";
       if (showLoading) setErrorMessage(message);
@@ -502,10 +542,16 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
 
   useEffect(() => {
     loadDashboardData();
-    const refreshTimer = setInterval(() => {
-      void loadDashboardData(false);
-    }, 10000);
-    return () => clearInterval(refreshTimer);
+    const moneyRefreshTimer = setInterval(() => {
+      void loadChildMoneyData(false);
+    }, 7000);
+    const supplementalRefreshTimer = setInterval(() => {
+      void loadChildSupplementalData(false);
+    }, 7000);
+    return () => {
+      clearInterval(moneyRefreshTimer);
+      clearInterval(supplementalRefreshTimer);
+    };
   }, []);
 
   useEffect(() => {
@@ -719,7 +765,14 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
       setFundGoalAmounts((prev) => ({ ...prev, [goalId]: "" }));
       await loadChildMoneyData(true);
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : "Could not fund goal.");
+      const message = err instanceof Error ? err.message : "Could not fund goal.";
+      if (/backend network failed|timed out|failed to fetch/i.test(message)) {
+        setFundGoalAmounts((prev) => ({ ...prev, [goalId]: "" }));
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+        await loadChildMoneyData(false);
+        return;
+      }
+      setErrorMessage(message);
     } finally {
       setIsSubmitting(false);
       setFundingGoalId(null);
@@ -1056,18 +1109,22 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
             {webNavItems.map((item) => {
               const active = tab === item.key;
               return (
-                <Pressable key={item.key} style={[styles.webNavItem, active ? styles.webNavItemActive : null]} onPress={() => handleTabPress(item.key)}>
-                  <View style={[styles.webNavIconPill, active ? styles.webNavIconPillActive : null]}>
-                    <Text style={styles.webNavIconEmoji}>{item.icon}</Text>
-                  </View>
-                  <Text style={[styles.webNavText, active ? styles.webNavTextActive : null]}>{item.label}</Text>
-                </Pressable>
+                <View key={item.key}>
+                  <Pressable style={[styles.webNavItem, active ? styles.webNavItemActive : null]} onPress={() => handleTabPress(item.key)}>
+                    <View style={[styles.webNavIconPill, active ? styles.webNavIconPillActive : null]}>
+                      <Text style={styles.webNavIconEmoji}>{item.icon}</Text>
+                    </View>
+                    <Text style={[styles.webNavText, active ? styles.webNavTextActive : null]}>{item.label}</Text>
+                  </Pressable>
+                  {item.key === "settings" ? (
+                    <Pressable style={styles.webLogoutBtn} onPress={onLogout}>
+                      <Text style={styles.webLogoutBtnText}>Log Out</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
               );
             })}
           </View>
-          <Pressable style={styles.webLogoutBtn} onPress={onLogout}>
-            <Text style={styles.webLogoutBtnText}>Log Out</Text>
-          </Pressable>
         </Animated.View>
 
       <ScrollView
@@ -1099,9 +1156,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                 <Text style={styles.mobileUsername}>Hi, {childDisplayName}!</Text>
                 <Text style={styles.mobileHello}>Let's learn, save and grow!</Text>
               </View>
-            </View>
-            <Image source={getTabHeroImage(tab)} style={styles.mobileHeaderArt} resizeMode="cover" />
-            <Pressable style={styles.mobileMenuBtn} onPress={() => setIsSidebarOpen(true)}>
+            </View>            <Pressable style={styles.mobileMenuBtn} onPress={() => setIsSidebarOpen(true)}>
               <View style={styles.mobileMenuLine} />
               <View style={styles.mobileMenuLine} />
               <View style={styles.mobileMenuLine} />
@@ -1173,43 +1228,9 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
               },
             ]}
           >
-            <View style={styles.mobileBalanceCard}>
-              <Image source={moneyIllustration1} style={styles.mobileBalanceMascot} resizeMode="contain" />
-              <Text style={styles.mobileBalanceLabel}>My Wallet Balance</Text>
+            <View style={styles.mobileBalanceCard}>              <Text style={styles.mobileBalanceLabel}>My Wallet Balance</Text>
               <Text style={styles.mobileBalanceAmount}>{formatMoney(displayBalance)}</Text>
               <Text style={styles.mobileBalanceMeta}>Available Balance</Text>
-            </View>
-
-            <View style={styles.mobileServicesGrid}>
-              <AnimatedTileButton
-                style={[styles.mobileServiceItem, styles.mobileServiceItemMoney]}
-                onPress={() => {
-                  setTxType("earn");
-                  setTab("actions");
-                }}
-              >
-                <Text style={styles.mobileServiceIcon}>{"\u{1F4BC}"}</Text>
-                <Text style={styles.mobileServiceLabel}>Add Money</Text>
-              </AnimatedTileButton>
-              <AnimatedTileButton
-                style={[styles.mobileServiceItem, styles.mobileServiceItemRequest]}
-                onPress={() => {
-                  setTxType("earn");
-                  setTxDescription("Money request");
-                  setTab("actions");
-                }}
-              >
-                <Text style={styles.mobileServiceIcon}>{"\u2708"}</Text>
-                <Text style={styles.mobileServiceLabel}>Request Money</Text>
-              </AnimatedTileButton>
-              <AnimatedTileButton style={[styles.mobileServiceItem, styles.mobileServiceItemGoals]} onPress={() => setTab("savings")}>
-                <Text style={styles.mobileServiceIcon}>{"\u{1F3AF}"}</Text>
-                <Text style={styles.mobileServiceLabel}>My Goals</Text>
-              </AnimatedTileButton>
-              <AnimatedTileButton style={[styles.mobileServiceItem, styles.mobileServiceItemChores]} onPress={() => setTab("chores")}>
-                <Text style={styles.mobileServiceIcon}>{"\u{1F4CB}"}</Text>
-                <Text style={styles.mobileServiceLabel}>My Chores</Text>
-              </AnimatedTileButton>
             </View>
 
             <View style={styles.mobileSectionHeader}>
@@ -1440,37 +1461,50 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
             </View>
 
             <View style={styles.mobileLearnTabs}>
-              <Text style={styles.mobileLearnTabActive}>All Lessons</Text>
-              <Text style={styles.mobileLearnTab}>In Progress</Text>
-              <Text style={styles.mobileLearnTab}>Completed</Text>
-              <Text style={styles.mobileLearnTab}>Quizzes</Text>
+              {([
+                { key: "all", label: "All Lessons" },
+                { key: "in_progress", label: "In Progress" },
+                { key: "completed", label: "Completed" },
+                { key: "quizzes", label: "Quizzes" },
+              ] as const).map((item) => {
+                const isActive = learningFilter === item.key;
+                return (
+                  <Pressable
+                    key={item.key}
+                    style={[styles.mobileLearnTabButton, isActive ? styles.mobileLearnTabButtonActive : null]}
+                    onPress={() => setLearningFilter(item.key)}
+                  >
+                    <Text style={isActive ? styles.mobileLearnTabActive : styles.mobileLearnTab}>{item.label}</Text>
+                  </Pressable>
+                );
+              })}
             </View>
 
             <View style={styles.softCard}>
               <Text style={styles.cardTitle}>Continue Learning</Text>
               <View style={styles.mobileContinueCard}>
                 <View style={styles.mobileContinueIcon}>
-                  <Text style={styles.mobileContinueIconText}>{learningLessons[0]?.resourceType === "video" ? "V" : learningLessons[0]?.resourceType === "pdf" ? "P" : "R"}</Text>
+                  <Text style={styles.mobileContinueIconText}>{featuredLearningLesson?.resourceType === "video" ? "V" : featuredLearningLesson?.resourceType === "pdf" ? "P" : "R"}</Text>
                 </View>
                 <View style={styles.mobileContinueMain}>
-                  <Text style={styles.mobileGoalTitle}>{learningLessons[0]?.title ?? "No lessons yet"}</Text>
-                  <Text style={styles.rowMeta}>{learningLessons[0]?.subtitle ?? "Parent approved lessons will appear here."}</Text>
+                  <Text style={styles.mobileGoalTitle}>{featuredLearningLesson?.title ?? "No lessons yet"}</Text>
+                  <Text style={styles.rowMeta}>{featuredLearningLesson?.subtitle ?? "Parent approved lessons will appear here."}</Text>
                   <Text style={styles.rowMeta} numberOfLines={3}>
-                    {learningLessons[0]?.content ?? "Ask your parent to approve a lesson or video for you."}
+                    {featuredLearningLesson?.content ?? "Ask your parent to approve a lesson or video for you."}
                   </Text>
-                  {learningLessons[0] ? (
+                  {featuredLearningLesson ? (
                     <View style={styles.learningActionRow}>
-                      <Pressable style={styles.learningActionBtnPrimary} onPress={() => openLearningResource(learningLessons[0])}>
-                        <Text style={styles.learningActionBtnPrimaryText}>{learningLessons[0].resourceLabel}</Text>
+                      <Pressable style={styles.learningActionBtnPrimary} onPress={() => openLearningResource(featuredLearningLesson)}>
+                        <Text style={styles.learningActionBtnPrimaryText}>{featuredLearningLesson.resourceLabel}</Text>
                       </Pressable>
                       <View style={styles.learningSecondaryActionStack}>
-                        {learningLessons[0].resourceUrl ? (
-                          <Pressable style={styles.learningActionBtn} onPress={() => downloadLearningResource(learningLessons[0])}>
+                        {featuredLearningLesson.resourceUrl ? (
+                          <Pressable style={styles.learningActionBtn} onPress={() => downloadLearningResource(featuredLearningLesson)}>
                             <Text style={styles.learningActionBtnText}>Download</Text>
                           </Pressable>
                         ) : null}
-                        {learningLessons[0].progress < 100 ? (
-                          <Pressable style={styles.learningActionBtn} onPress={() => markLearningFinished(learningLessons[0])}>
+                        {featuredLearningLesson.progress < 100 ? (
+                          <Pressable style={styles.learningActionBtn} onPress={() => markLearningFinished(featuredLearningLesson)}>
                             <Text style={styles.learningActionBtnText}>Finish</Text>
                           </Pressable>
                         ) : null}
@@ -1479,9 +1513,9 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                   ) : null}
                   <View style={styles.mobileContinueFooter}>
                     <View style={[styles.mobileGoalTrack, styles.mobileContinueTrack]}>
-                      <View style={[styles.mobileGoalTrackFill, { width: `${learningLessons[0]?.progress ?? 0}%` }]} />
+                      <View style={[styles.mobileGoalTrackFill, { width: `${featuredLearningLesson?.progress ?? 0}%` }]} />
                     </View>
-                    <Text style={styles.mobileGoalHint}>{learningLessons[0]?.progress ?? 0}%</Text>
+                    <Text style={styles.mobileGoalHint}>{featuredLearningLesson?.progress ?? 0}%</Text>
                   </View>
                 </View>
               </View>
@@ -1489,8 +1523,8 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
 
             <View style={styles.softCard}>
               <Text style={styles.cardTitle}>Parent Approved Lessons</Text>
-              {learningLessons.slice(0, 5).map((lesson, index) => (
-                <View key={lesson.id} style={[styles.mobileLessonRow, index === learningLessons.slice(0, 5).length - 1 ? styles.mobileRecentRowLast : null]}>
+              {filteredLearningLessons.slice(0, 5).map((lesson, index) => (
+                <View key={lesson.id} style={[styles.mobileLessonRow, index === filteredLearningLessons.slice(0, 5).length - 1 ? styles.mobileRecentRowLast : null]}>
                   <View style={styles.mobileLessonIconWrap}>
                     <Text style={styles.mobileLessonIcon}>{lesson.resourceType === "video" ? "V" : lesson.resourceType === "pdf" ? "P" : "R"}</Text>
                   </View>
@@ -1525,8 +1559,16 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                   </Text>
                 </View>
               ))}
-              {learningLessons.length === 0 ? (
-                <Text style={styles.rowMeta}>Lessons and videos approved by your parent will appear here.</Text>
+              {filteredLearningLessons.length === 0 ? (
+                <Text style={styles.rowMeta}>
+                  {learningFilter === "quizzes"
+                    ? "No quizzes are available yet. Check back after your parent adds quiz lessons."
+                    : learningFilter === "completed"
+                      ? "No completed lessons yet. Finish a lesson to see it here."
+                      : learningFilter === "in_progress"
+                        ? "No lessons are in progress yet. Start one from All Lessons."
+                        : "Lessons and videos approved by your parent will appear here."}
+                </Text>
               ) : null}
             </View>
 
@@ -1539,9 +1581,7 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
 
         {!isLoading && tab === "wallet" && isMobile ? (
           <View style={styles.sectionWrap}>
-            <View style={styles.mobileBalanceCard}>
-              <Image source={walletIllustration4} style={styles.mobileBalanceMascot} resizeMode="contain" />
-              <Text style={styles.mobileBalanceLabel}>My Wallet Balance</Text>
+            <View style={styles.mobileBalanceCard}>              <Text style={styles.mobileBalanceLabel}>My Wallet Balance</Text>
               <Text style={styles.mobileBalanceAmount}>{formatMoney(walletBalance)}</Text>
               <Text style={styles.mobileBalanceMeta}>Available Balance</Text>
             </View>
@@ -2076,6 +2116,32 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
                 </View>
               );
             })}
+
+            <View style={styles.mobileSectionHeader}>
+              <Text style={styles.mobileSectionTitle}>Completed Goals</Text>
+              <Text style={styles.mobileSectionLink}>{completedSavingsGoals.length}</Text>
+            </View>
+            {completedSavingsGoals.length === 0 ? (
+              <View style={styles.mobileGoalEmptyCard}>
+                <Text style={styles.mobileGoalEmptyTitle}>No completed goals yet</Text>
+                <Text style={styles.mobileGoalEmptyText}>Finish a savings goal and it will appear here with your golden star.</Text>
+              </View>
+            ) : null}
+            {completedSavingsGoals.map((goal) => (
+              <View key={goal.id} style={[styles.mobileGoalCard, styles.mobileCompletedGoalCard]}>
+                <View style={[styles.mobileGoalProgress, styles.mobileCompletedGoalBadge]}>
+                  <Text style={styles.mobileGoalProgressText}>{"\u2605"}</Text>
+                </View>
+                <View style={styles.mobileGoalMain}>
+                  <Text style={styles.mobileGoalTitle}>{goal.title}</Text>
+                  <Text style={styles.mobileGoalMeta}>{formatMoney(goal.currentAmount)} saved</Text>
+                  <View style={styles.mobileGoalTrack}>
+                    <View style={[styles.mobileGoalTrackFill, { width: "100%" }]} />
+                  </View>
+                  <Text style={styles.mobileGoalHint}>Completed. Golden star earned!</Text>
+                </View>
+              </View>
+            ))}
           </View>
         ) : null}
 
@@ -2449,10 +2515,6 @@ export function ChildDashboardScreen({ email, onLogout }: ChildDashboardScreenPr
               <AppInput label="My About Me" value={aboutMeDraft} onChangeText={setAboutMeDraft} multiline numberOfLines={4} placeholder="I like saving for toys, learning money skills..." />
               <AppButton title="Save About Me" loading={isSubmitting} onPress={handleSaveAboutMe} />
             </View>
-
-            <Pressable style={styles.mobileProfileLogoutBtn} onPress={onLogout}>
-              <Text style={styles.mobileProfileLogoutText}>Log Out</Text>
-            </Pressable>
           </View>
         ) : null}
 
@@ -2961,6 +3023,14 @@ const styles = StyleSheet.create({
     gap: 10,
     alignItems: "center",
   },
+  mobileCompletedGoalCard: {
+    borderColor: "#fde68a",
+    backgroundColor: "#fffbeb",
+  },
+  mobileCompletedGoalBadge: {
+    borderColor: "#facc15",
+    backgroundColor: "#fef3c7",
+  },
   mobileGoalProgress: {
     width: 62,
     height: 62,
@@ -3114,6 +3184,14 @@ const styles = StyleSheet.create({
     paddingBottom: 6,
     borderBottomWidth: 1,
     borderBottomColor: "#eceef5",
+  },
+  mobileLearnTabButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    borderRadius: 999,
+  },
+  mobileLearnTabButtonActive: {
+    backgroundColor: "#efe9ff",
   },
   mobileLearnTab: {
     color: "#6e7693",
@@ -4575,6 +4653,12 @@ const styles = StyleSheet.create({
     opacity: 0.55,
   },
 });
+
+
+
+
+
+
 
 
 
